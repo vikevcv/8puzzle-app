@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from collections import deque
-
+import heapq
 
 class Node:
     def __init__(self, state, parent, action, depth, name=""):
@@ -249,8 +249,114 @@ def ids_algorithm(start_state, goal_state, get_name_func, reset_name_func=None):
             
         limit += 1
 
+def ucs_algorithm(start_state, goal_state, get_name_func):
+    # Đếm số ô sai vị trí (TÍNH CẢ ô trống '0' theo ý bạn)
+    def count_diff(state):
+        return sum(1 for s, g in zip(state, goal_state) if s != g)
 
+    start_node = Node(start_state, None, "Start", 0, get_name_func())
+    # Gán chi phí ban đầu cho node Start = 0 để khi cộng dồn không bị sai lệch
+    start_node.path_cost = 0
+    
+    counter = 0  
+    frontier = []
+    heapq.heappush(frontier, (start_node.path_cost, counter, start_node))
+    
+    reached = {start_state: start_node.path_cost}
+    
+    if start_state == goal_state:
+        yield start_node, [{"name": start_node.name, "action": "Start", "state": start_state, "is_goal": True, "parent_name": "None", "cost": start_node.path_cost}], set(reached.keys()), start_node
+        return
 
+    while frontier:
+        curr_cost, _, curr = heapq.heappop(frontier)
+        
+        if curr.state == goal_state:
+            yield curr, [{"name": curr.name, "action": "", "state": curr.state, "is_goal": True, "parent_name": curr.parent.name if curr.parent else "None", "cost": curr.path_cost}], set(reached.keys()), curr
+            return
+            
+        new_frontier_logs = []
+        
+        for new_state, act in get_neighbors(curr):
+            step_cost = count_diff(new_state)
+            new_cost = curr.path_cost + step_cost  # Cộng dồn: chi phí cha + số ô sai khác của con
+            
+            if new_state not in reached or new_cost < reached[new_state]:
+                reached[new_state] = new_cost
+                child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+                child.path_cost = new_cost
+                
+                counter += 1
+                heapq.heappush(frontier, (new_cost, counter, child))
+                
+                new_frontier_logs.append({
+                    "name": child.name, 
+                    "action": act, 
+                    "state": child.state, 
+                    "is_goal": (new_state == goal_state), 
+                    "parent_name": curr.name, 
+                    "cost": new_cost
+                })
+                
+        yield curr, new_frontier_logs, set(reached.keys()), None
+
+def greedy_algorithm(start_state, goal_state, get_name_func):
+    start_node = Node(start_state, None, "Start", 0, get_name_func())
+    
+    counter = 0  
+    frontier = []
+    
+    # f(n) = h(n) (Chỉ dùng Heuristic)
+    h_start = get_manhattan_distance(start_state, goal_state)
+    heapq.heappush(frontier, (h_start, counter, start_node))
+    
+    # Dùng thêm in_frontier để kiểm tra nhanh (giống slide: kiểm tra m có trong frontier chưa)
+    in_frontier = {start_state}
+    reached = set()
+    
+    if start_state == goal_state:
+        yield start_node, [{"name": start_node.name, "action": "Start", "state": start_state, "is_goal": True, "parent_name": "None", "cost": h_start}], reached, start_node
+        return
+
+    while frontier:
+        # Lấy trạng thái n từ frontier có h(n) nhỏ nhất
+        curr_h, _, curr = heapq.heappop(frontier)
+        in_frontier.remove(curr.state)
+        
+        # Thêm n vào reached (giống bước 3.c trên slide)
+        reached.add(curr.state)
+        
+        # Nếu n == Goal (giống bước 3.b)
+        if curr.state == goal_state:
+            yield curr, [{"name": curr.name, "action": "", "state": curr.state, "is_goal": True, "parent_name": curr.parent.name if curr.parent else "None", "cost": curr_h}], reached, curr
+            return
+            
+        new_frontier_logs = []
+        
+        # Với mỗi trạng thái m kề với n (giống bước 3.d)
+        for new_state, act in get_neighbors(curr):
+            # NẾU m chưa có trong cả frontier và reached (giống bước 3.d.i)
+            if new_state not in reached and new_state not in in_frontier:
+                child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+                
+                # Tính giá trị heuristic h(m)
+                h = get_manhattan_distance(new_state, goal_state)
+                
+                # Thêm m vào frontier
+                counter += 1
+                heapq.heappush(frontier, (h, counter, child))
+                in_frontier.add(new_state)
+                
+                new_frontier_logs.append({
+                    "name": child.name, 
+                    "action": act, 
+                    "state": child.state, 
+                    "is_goal": (new_state == goal_state), 
+                    "parent_name": curr.name, 
+                    "cost": h  # In ra đúng giá trị h để hiện lên UI
+                })
+                
+        yield curr, new_frontier_logs, reached, None
 class PuzzleApp:
     def __init__(self, root):
         self.root = root
@@ -307,7 +413,9 @@ class PuzzleApp:
             "BFS Cổ điển (Early Goal + Explored Muộn)",
             "BFS Generic (Late Goal + Reached Muộn)",
             "DFS (LIFO Stack)",
-            "IDS" 
+            "IDS" ,
+            "UCS (Uniform Cost Search)",
+            "Greedy Search (Tham lam - Manhattan)"
         )
         self.algo_cb.current(0)
         self.algo_cb.grid(row=0, column=1, columnspan=2, pady=5)
@@ -515,6 +623,10 @@ class PuzzleApp:
             self.generator = bfs_generic(start_state, goal_state, self.get_next_name)
         elif "IDS" in algo:
             self.generator = ids_algorithm(start_state, goal_state, self.get_next_name, self.reset_name_counter)
+        elif "UCS" in algo: 
+            self.generator = ucs_algorithm(start_state, goal_state, self.get_next_name)
+        elif "Greedy" in algo:
+            self.generator = greedy_algorithm(start_state, goal_state, self.get_next_name)
         else:
             self.generator = dfs_algorithm(start_state, goal_state, self.get_next_name)
 
