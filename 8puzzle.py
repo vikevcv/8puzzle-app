@@ -42,17 +42,12 @@ def get_manhattan_distance(state, goal):
     return distance
 
 def is_in_path(node, target_state):
-    """
-    Kiểm tra xem trạng thái sắp sinh ra (target_state) 
-    có bị trùng với bất kỳ tổ tiên nào trên đường đi không.
-    """
     curr = node
     while curr:
         if curr.state == target_state:
             return True
         curr = curr.parent
     return False
-
 
 class ScrollableFrame(tk.Frame):
     def __init__(self, parent):
@@ -83,6 +78,142 @@ class ScrollableFrame(tk.Frame):
         self.canvas.yview_moveto(0)
 
 
+# =========================================================================
+# ================= THUẬT TOÁN ĐÃ ĐƯỢC CẬP NHẬT: A* và IDA* ===============
+# =========================================================================
+
+def a_star_algorithm(start_state, goal_state, get_name_func):
+    """Thuật toán A* với g(n) cộng dồn từ node cha bằng Heuristic Manhattan"""
+    start_node = Node(start_state, None, "Start", 0, get_name_func())
+    start_node.h = get_manhattan_distance(start_state, goal_state)
+    start_node.g = 0 
+    start_node.f = start_node.g + start_node.h
+    
+    counter = 0  
+    frontier = []
+    heapq.heappush(frontier, (start_node.f, counter, start_node))
+    
+    reached = {start_state: start_node.g}
+    
+    if start_state == goal_state:
+        yield start_node, [{"name": start_node.name, "action": "Start", "state": start_state, "is_goal": True, "parent_name": "None", "cost": f"{start_node.g}+{start_node.h}"}], set(reached.keys()), start_node
+        return
+
+    while frontier:
+        curr_f, _, curr = heapq.heappop(frontier)
+        
+        if curr.state in reached and reached[curr.state] < curr.g:
+            continue
+
+        if curr.state == goal_state:
+            yield curr, [{"name": curr.name, "action": "", "state": curr.state, "is_goal": True, "parent_name": curr.parent.name if curr.parent else "None", "cost": f"{curr.g}+{curr.h}"}], set(reached.keys()), curr
+            return
+            
+        new_frontier_logs = []
+        
+        for new_state, act in get_neighbors(curr):
+            h_new = get_manhattan_distance(new_state, goal_state)
+            # Theo yêu cầu: cộng dồn manhattan cho cả g(n) từ node cha
+            g_new = curr.g + h_new
+            f_new = g_new + h_new
+            
+            if new_state in reached and g_new >= reached[new_state]:
+                continue
+                
+            reached[new_state] = g_new
+            
+            child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+            child.g = g_new
+            child.h = h_new
+            child.f = f_new
+            
+            counter += 1
+            heapq.heappush(frontier, (child.f, counter, child))
+            
+            new_frontier_logs.append({
+                "name": child.name, 
+                "action": act, 
+                "state": child.state, 
+                "is_goal": (new_state == goal_state), 
+                "parent_name": curr.name, 
+                "cost": f"{child.g}+{child.h}" 
+            })
+            
+        yield curr, new_frontier_logs, set(reached.keys()), None
+
+def ida_star_algorithm(start_state, goal_state, get_name_func, reset_name_func=None):
+    """Thuật toán Iterative Deepening A* (IDA*) với cơ chế cắt tỉa lúc sinh"""
+    # Ngưỡng ban đầu là f của node start
+    start_h = get_manhattan_distance(start_state, goal_state)
+    threshold = start_h 
+    
+    while True:
+        if reset_name_func:
+            reset_name_func()
+            
+        start_node = Node(start_state, None, "Start", 0, get_name_func())
+        start_node.h = start_h
+        start_node.g = 0
+        start_node.f = start_node.g + start_node.h
+        
+        frontier = [start_node]
+        iteration_reached = {start_state}
+        
+        next_threshold = float('inf')
+        cutoff_occurred = False
+        
+        while frontier:
+            curr = frontier.pop()
+            
+            if curr.state == goal_state:
+                parent_name = curr.parent.name if curr.parent else "None"
+                yield curr, [{"name": curr.name, "action": curr.action, "state": curr.state, "is_goal": True, "parent_name": parent_name, "cost": f"{curr.g}+{curr.h}"}], iteration_reached, curr
+                return
+            
+            new_frontier_logs = []
+            for new_state, act in get_neighbors(curr):
+                if not is_in_path(curr, new_state):
+                    h_new = get_manhattan_distance(new_state, goal_state)
+                    # Cộng dồn manhattan cho g(n) như yêu cầu
+                    g_new = curr.g + h_new
+                    f_new = g_new + h_new
+                    
+                    child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+                    child.g = g_new
+                    child.h = h_new
+                    child.f = f_new
+                    
+                    # CẬP NHẬT: Không dùng lệnh continue nữa để vẫn đưa node vào logs hiển thị
+                    if f_new > threshold:
+                        cutoff_occurred = True
+                        next_threshold = min(next_threshold, f_new)
+                        cost_str = f"{child.g}+{child.h} (Loại > Mốc {threshold})"
+                    else:
+                        frontier.append(child)
+                        iteration_reached.add(new_state)
+                        cost_str = f"{child.g}+{child.h}"
+                        
+                    new_frontier_logs.append({
+                        "name": child.name, 
+                        "action": act, 
+                        "state": child.state, 
+                        "is_goal": False, 
+                        "parent_name": curr.name, 
+                        "cost": cost_str
+                    })
+                    
+            yield curr, new_frontier_logs, iteration_reached, None
+                
+        # Nâng mốc xét duyệt lên mức tối ưu kế tiếp
+        if not cutoff_occurred or next_threshold == float('inf'):
+            break 
+            
+        threshold = next_threshold
+
+
+# =========================================================================
+# ======================== CÁC THUẬT TOÁN CŨ ==============================
+# =========================================================================
 
 def bfs_optimized(start_state, goal_state, get_name_func):
     start_node = Node(start_state, None, "Start", 0, get_name_func())
@@ -190,7 +321,6 @@ def dfs_algorithm(start_state, goal_state, get_name_func):
         yield curr, new_frontier_logs, reached, None
 
 def ids_algorithm(start_state, goal_state, get_name_func, reset_name_func=None):
-    """Thuật toán Iterative Deepening Search (Đã chặn chu trình ngay từ lúc sinh)"""
     limit = 0
     
     while True:
@@ -201,29 +331,24 @@ def ids_algorithm(start_state, goal_state, get_name_func, reset_name_func=None):
         frontier = [start_node]
         cutoff_occurred = False
         
-       
         iteration_reached = {start_state}
         
         while frontier:
             curr = frontier.pop()
             
-          
             if curr.state == goal_state:
                 parent_name = curr.parent.name if curr.parent else "None"
                 yield curr, [{"name": curr.name, "action": curr.action, "state": curr.state, "is_goal": True, "parent_name": parent_name, "cost": curr.depth}], iteration_reached, curr
                 return
             
-          
             if curr.depth >= limit:
                 cutoff_occurred = True
                 frontier_yield_data = "Cutoff"  
             
-           
             else:
                 new_frontier_logs = []
                 for new_state, act in get_neighbors(curr):
                     
-                   
                     if not is_in_path(curr, new_state):
                         child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
                         new_frontier_logs.append({
@@ -235,27 +360,22 @@ def ids_algorithm(start_state, goal_state, get_name_func, reset_name_func=None):
                             "cost": child.depth
                         })
                         frontier.append(child)
-                        
-             
                         iteration_reached.add(new_state)
                         
                 frontier_yield_data = new_frontier_logs
                 
             yield curr, frontier_yield_data, iteration_reached, None
             
-      
         if not cutoff_occurred:
             break
             
         limit += 1
 
 def ucs_algorithm(start_state, goal_state, get_name_func):
-    # Đếm số ô sai vị trí (TÍNH CẢ ô trống '0' theo ý bạn)
     def count_diff(state):
         return sum(1 for s, g in zip(state, goal_state) if s != g)
 
     start_node = Node(start_state, None, "Start", 0, get_name_func())
-    # Gán chi phí ban đầu cho node Start = 0 để khi cộng dồn không bị sai lệch
     start_node.path_cost = 0
     
     counter = 0  
@@ -279,7 +399,7 @@ def ucs_algorithm(start_state, goal_state, get_name_func):
         
         for new_state, act in get_neighbors(curr):
             step_cost = count_diff(new_state)
-            new_cost = curr.path_cost + step_cost  # Cộng dồn: chi phí cha + số ô sai khác của con
+            new_cost = curr.path_cost + step_cost 
             
             if new_state not in reached or new_cost < reached[new_state]:
                 reached[new_state] = new_cost
@@ -306,11 +426,9 @@ def greedy_algorithm(start_state, goal_state, get_name_func):
     counter = 0  
     frontier = []
     
-    # f(n) = h(n) (Chỉ dùng Heuristic)
     h_start = get_manhattan_distance(start_state, goal_state)
     heapq.heappush(frontier, (h_start, counter, start_node))
     
-    # Dùng thêm in_frontier để kiểm tra nhanh (giống slide: kiểm tra m có trong frontier chưa)
     in_frontier = {start_state}
     reached = set()
     
@@ -319,30 +437,23 @@ def greedy_algorithm(start_state, goal_state, get_name_func):
         return
 
     while frontier:
-        # Lấy trạng thái n từ frontier có h(n) nhỏ nhất
         curr_h, _, curr = heapq.heappop(frontier)
         in_frontier.remove(curr.state)
         
-        # Thêm n vào reached (giống bước 3.c trên slide)
         reached.add(curr.state)
         
-        # Nếu n == Goal (giống bước 3.b)
         if curr.state == goal_state:
             yield curr, [{"name": curr.name, "action": "", "state": curr.state, "is_goal": True, "parent_name": curr.parent.name if curr.parent else "None", "cost": curr_h}], reached, curr
             return
             
         new_frontier_logs = []
         
-        # Với mỗi trạng thái m kề với n (giống bước 3.d)
         for new_state, act in get_neighbors(curr):
-            # NẾU m chưa có trong cả frontier và reached (giống bước 3.d.i)
             if new_state not in reached and new_state not in in_frontier:
                 child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
                 
-                # Tính giá trị heuristic h(m)
                 h = get_manhattan_distance(new_state, goal_state)
                 
-                # Thêm m vào frontier
                 counter += 1
                 heapq.heappush(frontier, (h, counter, child))
                 in_frontier.add(new_state)
@@ -353,10 +464,15 @@ def greedy_algorithm(start_state, goal_state, get_name_func):
                     "state": child.state, 
                     "is_goal": (new_state == goal_state), 
                     "parent_name": curr.name, 
-                    "cost": h  # In ra đúng giá trị h để hiện lên UI
+                    "cost": h 
                 })
                 
         yield curr, new_frontier_logs, reached, None
+
+# =========================================================================
+# =============================== LỚP UI ==================================
+# =========================================================================
+
 class PuzzleApp:
     def __init__(self, root):
         self.root = root
@@ -385,7 +501,6 @@ class PuzzleApp:
         return res
 
     def reset_name_counter(self):
-        """Hàm dùng riêng cho IDS để đưa tên Node về lại A"""
         self.node_counter = 0
 
     def setup_ui(self):
@@ -415,7 +530,9 @@ class PuzzleApp:
             "DFS (LIFO Stack)",
             "IDS" ,
             "UCS (Uniform Cost Search)",
-            "Greedy Search (Tham lam - Manhattan)"
+            "Greedy Search (Tham lam - Manhattan)",
+            "A* (A Star)",
+            "IDA* (Iterative Deepening A*)"
         )
         self.algo_cb.current(0)
         self.algo_cb.grid(row=0, column=1, columnspan=2, pady=5)
@@ -468,8 +585,6 @@ class PuzzleApp:
         
         tk.Label(header_frame, text="Node", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=0, sticky="w", padx=10)
         tk.Label(header_frame, text="Frontier", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=1, sticky="w", padx=10)
-        
-        
         tk.Label(header_frame, text="Reached", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=2, sticky="w", padx=10)
         
         self.log_scroll = ScrollableFrame(self.right_frame)
@@ -528,22 +643,19 @@ class PuzzleApp:
         row_frame.columnconfigure(1, weight=5, minsize=450)
         row_frame.columnconfigure(2, weight=3, minsize=300)
         
-        
         f_node = tk.Frame(row_frame, bg="white")
         f_node.grid(row=0, column=0, sticky="nw", padx=10, pady=5)
         if curr_node:
             mb = self.create_mini_board_canvas(f_node, curr_node.state, title=f"Node {curr_node.name}")
             mb.pack()
             
-      
         f_front = tk.Frame(row_frame, bg="white")
         f_front.grid(row=0, column=1, sticky="nw", padx=10, pady=5)
         
-     
         if frontier_list == "Cutoff":
-            tk.Label(f_front, text="CUTOFF", bg="white", fg="#e74c3c", font=("Arial", 11, "bold")).pack(anchor="w")
+            tk.Label(f_front, text="CUTOFF (Sinh ra nhưng vượt mốc)", bg="white", fg="#e74c3c", font=("Arial", 11, "bold")).pack(anchor="w")
         elif not frontier_list:
-            tk.Label(f_front, text="(Không sinh thêm)", bg="white", fg="gray", font=("Arial", 10, "italic")).pack(anchor="w")
+            tk.Label(f_front, text="(Không được thêm vào Frontier)", bg="white", fg="gray", font=("Arial", 10, "italic")).pack(anchor="w")
         else:
             for item in frontier_list:
                 item_frame = tk.Frame(f_front, bg="white")
@@ -556,7 +668,15 @@ class PuzzleApp:
                 act_char = item['action'][0] if item['action'] else ""
                 info_text = f" , {item['parent_name']} , {act_char} , {item['cost']} }} ➔ Node {item['name']}"
                 
-                color = "#27ae60" if item['is_goal'] else "#2c3e50"
+                # CẬP NHẬT: Ép str() để đảm bảo các thuật toán cũ lưu int không bị sập hàm
+                is_loai = "Loại" in str(item['cost'])
+                if is_loai:
+                    color = "#e74c3c"
+                elif item['is_goal']:
+                    color = "#27ae60"
+                else:
+                    color = "#2c3e50"
+                    
                 if item['is_goal']:
                     info_text += " ★"
                     
@@ -621,12 +741,16 @@ class PuzzleApp:
             self.generator = bfs_classic(start_state, goal_state, self.get_next_name)
         elif "Generic" in algo:
             self.generator = bfs_generic(start_state, goal_state, self.get_next_name)
+        elif "IDA*" in algo:
+            self.generator = ida_star_algorithm(start_state, goal_state, self.get_next_name, self.reset_name_counter)
         elif "IDS" in algo:
             self.generator = ids_algorithm(start_state, goal_state, self.get_next_name, self.reset_name_counter)
         elif "UCS" in algo: 
             self.generator = ucs_algorithm(start_state, goal_state, self.get_next_name)
         elif "Greedy" in algo:
             self.generator = greedy_algorithm(start_state, goal_state, self.get_next_name)
+        elif "A*" in algo:
+            self.generator = a_star_algorithm(start_state, goal_state, self.get_next_name)
         else:
             self.generator = dfs_algorithm(start_state, goal_state, self.get_next_name)
 
@@ -665,7 +789,7 @@ class PuzzleApp:
                 self.btn_auto.config(state="disabled")
                 
         except StopIteration:
-            self.lbl_status.config(text="❌ Thất bại: Đã duyệt hết trạng thái!", fg="#c0392b")
+            self.lbl_status.config(text="❌ Thất bại: Đã duyệt hết không gian trạng thái!", fg="#c0392b")
             self.is_solved = True
             
             self.btn_step.config(state="disabled")
