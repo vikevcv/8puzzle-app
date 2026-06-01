@@ -1,143 +1,72 @@
 # 🧩 8-Puzzle AI Visualizer
 
-Ứng dụng mô phỏng trực quan bài toán 8-Puzzle bằng Python với giao diện đồ họa Tkinter.
+Ứng dụng mô phỏng trực quan bài toán 8-Puzzle viết bằng Python và giao diện Tkinter.
 
-Project hỗ trợ nhiều thuật toán tìm kiếm AI và hiển thị chi tiết:
-
-- Frontier
-- Reached / Explored
-- Node đang xét
-- Cost
-- Manhattan Distance
-- Đường đi tới đích
+Ứng dụng này minh hoạ nhiều thuật toán tìm kiếm và tối ưu hoá, đồng thời hiển thị thông tin chi tiết về Frontier, Reached/Explored, node hiện tại, cost, Manhattan distance và đường đi tìm được.
 
 ---
 
-# ✨ Features
+## ✨ Tính năng chính
 
-## 🔍 Supported Algorithms
-
-- BFS Optimized
-- BFS Classic
-- BFS Generic
-- DFS
-- IDS
-- UCS (Uniform Cost Search)
-- Greedy Best First Search
-- A* Search
-- IDA* Search
+- Hỗ trợ nhiều thuật toán: BFS (Optimized / Classic / Generic), DFS, IDS, UCS, Greedy (Manhattan), A*, IDA*, Simple Hill Climbing, Steepest-Ascent Hill Climbing.
+- Visual logs: hiển thị node hiện tại, danh sách frontier, tập reached, mini-board cho từng node.
+- Bảng điều khiển tương tác: chọn thuật toán, nhập trạng thái đầu và đích, chạy từng bước hoặc tự động, reset.
+- Hiển thị thống kê: Manhattan distance, depth, số node đã duyệt và trạng thái tìm kiếm.
 
 ---
 
-## 📊 Visualization
+## 🧠 Ghi chú thuật toán (những điểm đáng chú ý)
 
-Ứng dụng hiển thị trực quan:
-
-- Ma trận trạng thái hiện tại
-- Ma trận trạng thái đích
-- Frontier
-- Reached / Explored
-- Node cha
-- Action
-- Cost
-- Manhattan Distance
-- Depth
-- Số node đã duyệt
+- Simple Hill Climbing: cost được tính bằng giá trị ô vừa đổi chỗ với '0' (giá trị nhỏ hơn tốt hơn). Thuật toán dừng khi không tìm được lân cận tốt hơn.
+- Steepest-Ascent Hill Climbing: sinh tất cả lân cận, chọn lân cận có cost nhỏ nhất.
+- Greedy: dùng Manhattan heuristic để chọn node gần đích nhất.
+- A*: dùng f(n) = g(n) + h(n) với h là Manhattan distance.
+- IDA*: Iterative Deepening kết hợp heuristic để giảm bộ nhớ so với A*.
+- Lưu ý: trong mô phỏng, thứ tự sinh nước đi là: Left, Right, Up, Down (Trái, Phải, Trên, Dưới).
 
 ---
 
-## 🎮 Interactive Controls
+## 🖥️ Giao diện & Điều khiển
 
-- Chạy từng bước
-- Chạy tự động
-- Reset thuật toán
-- Thay đổi trạng thái đầu/cuối
-
----
-
-# 🖼️ Interface
-
-## Main UI
-
-- Current State
-- Goal State
-- Control Panel
-- Simulation Log
-- Statistics Panel
+- Two main boards: `Current State` và `Goal State`.
+- Control panel: chọn thuật toán, thiết lập `start`/`goal` (chuỗi 9 ký tự gồm các số 0-8; `0` đại diện ô trống).
+- Buttons: `Khởi tạo lại`, `Chạy 1 Bước`, `Chạy Tự Động` / `Tạm Dừng`.
+- Simulation log: từng hàng hiển thị Node hiện tại, Frontier (mini-boards), và Reached set.
 
 ---
 
-# 🧠 Algorithms Explanation
+## ✅ Yêu cầu
 
-## BFS
-
-Breadth First Search sử dụng Queue FIFO.
-
-Đảm bảo tìm lời giải ngắn nhất nếu cost các cạnh bằng nhau.
+- Python 3.8+ (đã thử với Python 3.10+)
+- Tkinter (thường có sẵn với Python trên Windows/Mac; trên Linux có thể cần cài gói `python3-tk`).
 
 ---
 
-## DFS
+## 🚀 Chạy ứng dụng
 
-Depth First Search sử dụng Stack LIFO.
-
-Tiết kiệm bộ nhớ nhưng không đảm bảo tối ưu.
-
----
-
-## UCS
-
-Uniform Cost Search mở rộng node có path cost nhỏ nhất.
-
----
-
-## Greedy Search
-
-Sử dụng heuristic Manhattan Distance:
-
-h(n)
-
-để chọn node gần đích nhất.
-
----
-
-## A*
-
-Sử dụng:
-
-f(n) = g(n) + h(n)
-
-Trong đó:
-
-- g(n): cost từ start
-- h(n): Manhattan heuristic
-
----
-
-## IDA*
-
-Iterative Deepening A* kết hợp:
-
-- DFS
-- Heuristic A*
-
-để giảm bộ nhớ sử dụng.
-
----
-
-# 📦 Technologies Used
-
-- Python 3
-- Tkinter
-- collections.deque
-- heapq
-
----
-
-# 🚀 Installation
-
-## Clone repository
+1. Mở terminal tại thư mục chứa file.
 
 ```bash
-git clone https://github.com/your-username/8-puzzle-ai.git
-cd 8-puzzle-ai
+python 8puzzle.py
+```
+
+2. Nhập trạng thái bắt đầu và trạng thái đích dưới dạng chuỗi 9 ký tự (ví dụ `123406758` và `123456780`). `0` là ô trống.
+
+---
+
+## 🔎 Ví dụ nhanh
+
+- Start: `123406758`
+- Goal:  `123456780`
+- Chọn thuật toán A* hoặc IDA* để tìm đường đi hiệu quả với heuristic Manhattan.
+
+---
+
+## 📂 File chính
+
+- [8puzzle.py](8puzzle.py) — mã nguồn chính chứa cả thuật toán và UI.
+- [readme.md](readme.md) — hướng dẫn này.
+
+---
+
+Nếu bạn muốn tôi cập nhật thêm phần giải thích thuật toán, thêm ảnh chụp màn hình, hoặc tạo `requirements.txt`, hãy cho biết.

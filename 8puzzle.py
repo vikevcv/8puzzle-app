@@ -17,6 +17,7 @@ def get_neighbors(node):
     zero_idx = state.find('0')
     row, col = divmod(zero_idx, 3)
     
+    # Thứ tự duyệt chuẩn: Trái, Phải, Trên, Dưới (L, R, U, D)
     moves = [(0, -1, "Left"), (0, 1, "Right"), (-1, 0, "Up"), (1, 0, "Down")]
     
     for r, c, act in moves:
@@ -77,13 +78,133 @@ class ScrollableFrame(tk.Frame):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         self.canvas.yview_moveto(0)
 
+# =========================================================================
+# ======================== THUẬT TOÁN LEO NÚI ĐÃ SỬA ======================
+# =========================================================================
+
+def simple_hill_climbing(start_state, goal_state, get_name_func):
+    """
+    Leo núi đơn giản (Simple Hill Climbing):
+    - Cost = Giá trị của ô vừa đổi vị trí với số 0.
+    - Sinh ra lân cận nào CÓ COST NHỎ HƠN hiện tại -> CHỌN LUÔN và ngừng sinh lân cận khác.
+    """
+    start_node = Node(start_state, None, "Start", 0, get_name_func())
+    # Gán Cost ban đầu = 9 (lớn hơn mọi ô 1-8) để bước đi đầu tiên luôn nhỏ hơn và được chọn
+    start_node.h = 9 
+    curr = start_node
+    reached = {start_state}
+    
+    if curr.state == goal_state:
+        yield curr, [{"name": curr.name, "action": "Start", "state": curr.state, "is_goal": True, "parent_name": "None", "cost": 0}], reached, curr
+        return
+
+    while True:
+        new_frontier_logs = []
+        next_node = None
+        
+        for new_state, act in get_neighbors(curr):
+            # Lấy giá trị của ô vừa hoán đổi với số '0' làm COST
+            zero_idx_curr = curr.state.find('0')
+            swapped_tile_val = int(new_state[zero_idx_curr])
+            
+            child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+            child.h = swapped_tile_val 
+            
+            is_goal = (new_state == goal_state)
+            
+            new_frontier_logs.append({
+                "name": child.name, 
+                "action": act, 
+                "state": child.state, 
+                "is_goal": is_goal, 
+                "parent_name": curr.name, 
+                "cost": child.h
+            })
+            
+            # Simple Hill Climbing: Nếu thấy lân cận TỐT HƠN (Cost nhỏ hơn), lập tức DỪNG vòng lặp sinh lân cận
+            if child.h < curr.h:
+                next_node = child
+                break 
+                
+        # Trả về các node ĐÃ SINH để hiển thị (Nếu break sớm thì mảng logs sẽ ngắn)
+        yield curr, new_frontier_logs, reached, None
+        
+        # Nếu không có node nào tốt hơn -> Đã đạt Cực tiểu cục bộ (Local Minimum)
+        if next_node is None:
+            return
+            
+        if next_node.state == goal_state:
+            reached.add(next_node.state)
+            yield next_node, [], reached, next_node
+            return
+            
+        curr = next_node
+        reached.add(curr.state)
+
+def steepest_ascent_hill_climbing(start_state, goal_state, get_name_func):
+    """
+    Leo núi dốc nhất (Steepest-Ascent Hill Climbing):
+    - Cost = Giá trị của ô vừa đổi vị trí với số 0.
+    - Sinh TẤT CẢ lân cận, tìm node có Cost TỐT NHẤT (nhỏ nhất) để đi tiếp.
+    """
+    start_node = Node(start_state, None, "Start", 0, get_name_func())
+    start_node.h = 9
+    curr = start_node
+    reached = {start_state}
+    
+    if curr.state == goal_state:
+        yield curr, [{"name": curr.name, "action": "Start", "state": curr.state, "is_goal": True, "parent_name": "None", "cost": 0}], reached, curr
+        return
+
+    while True:
+        new_frontier_logs = []
+        best_node = None
+        best_h = float('inf')
+        
+        for new_state, act in get_neighbors(curr):
+            # Lấy giá trị của ô vừa hoán đổi với số '0' làm COST
+            zero_idx_curr = curr.state.find('0')
+            swapped_tile_val = int(new_state[zero_idx_curr])
+            
+            child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+            child.h = swapped_tile_val
+            
+            is_goal = (new_state == goal_state)
+            
+            new_frontier_logs.append({
+                "name": child.name, 
+                "action": act, 
+                "state": child.state, 
+                "is_goal": is_goal, 
+                "parent_name": curr.name, 
+                "cost": child.h
+            })
+            
+            # Tìm node có Cost NHỎ NHẤT trong số TẤT CẢ các lân cận
+            if child.h < best_h:
+                best_h = child.h
+                best_node = child
+                
+        yield curr, new_frontier_logs, reached, None
+        
+        # Nếu node tốt nhất tìm được vẫn KHÔNG tốt hơn node hiện tại -> Cực tiểu cục bộ
+        if best_node is None or best_h >= curr.h:
+            return
+            
+        if best_node.state == goal_state:
+            reached.add(best_node.state)
+            yield best_node, [], reached, best_node
+            return
+            
+        curr = best_node
+        reached.add(curr.state)
+
 
 # =========================================================================
-# ================= THUẬT TOÁN ĐÃ ĐƯỢC CẬP NHẬT: A* và IDA* ===============
+# ========================= CÁC THUẬT TOÁN KHÁC ===========================
 # =========================================================================
 
 def a_star_algorithm(start_state, goal_state, get_name_func):
-    """Thuật toán A* với g(n) cộng dồn từ node cha bằng Heuristic Manhattan"""
     start_node = Node(start_state, None, "Start", 0, get_name_func())
     start_node.h = get_manhattan_distance(start_state, goal_state)
     start_node.g = 0 
@@ -113,7 +234,6 @@ def a_star_algorithm(start_state, goal_state, get_name_func):
         
         for new_state, act in get_neighbors(curr):
             h_new = get_manhattan_distance(new_state, goal_state)
-            # Theo yêu cầu: cộng dồn manhattan cho cả g(n) từ node cha
             g_new = curr.g + h_new
             f_new = g_new + h_new
             
@@ -142,8 +262,6 @@ def a_star_algorithm(start_state, goal_state, get_name_func):
         yield curr, new_frontier_logs, set(reached.keys()), None
 
 def ida_star_algorithm(start_state, goal_state, get_name_func, reset_name_func=None):
-    """Thuật toán Iterative Deepening A* (IDA*) với cơ chế cắt tỉa lúc sinh"""
-    # Ngưỡng ban đầu là f của node start
     start_h = get_manhattan_distance(start_state, goal_state)
     threshold = start_h 
     
@@ -174,7 +292,6 @@ def ida_star_algorithm(start_state, goal_state, get_name_func, reset_name_func=N
             for new_state, act in get_neighbors(curr):
                 if not is_in_path(curr, new_state):
                     h_new = get_manhattan_distance(new_state, goal_state)
-                    # Cộng dồn manhattan cho g(n) như yêu cầu
                     g_new = curr.g + h_new
                     f_new = g_new + h_new
                     
@@ -183,7 +300,6 @@ def ida_star_algorithm(start_state, goal_state, get_name_func, reset_name_func=N
                     child.h = h_new
                     child.f = f_new
                     
-                    # CẬP NHẬT: Không dùng lệnh continue nữa để vẫn đưa node vào logs hiển thị
                     if f_new > threshold:
                         cutoff_occurred = True
                         next_threshold = min(next_threshold, f_new)
@@ -204,16 +320,10 @@ def ida_star_algorithm(start_state, goal_state, get_name_func, reset_name_func=N
                     
             yield curr, new_frontier_logs, iteration_reached, None
                 
-        # Nâng mốc xét duyệt lên mức tối ưu kế tiếp
         if not cutoff_occurred or next_threshold == float('inf'):
             break 
             
         threshold = next_threshold
-
-
-# =========================================================================
-# ======================== CÁC THUẬT TOÁN CŨ ==============================
-# =========================================================================
 
 def bfs_optimized(start_state, goal_state, get_name_func):
     start_node = Node(start_state, None, "Start", 0, get_name_func())
@@ -532,7 +642,9 @@ class PuzzleApp:
             "UCS (Uniform Cost Search)",
             "Greedy Search (Tham lam - Manhattan)",
             "A* (A Star)",
-            "IDA* (Iterative Deepening A*)"
+            "IDA* (Iterative Deepening A*)",
+            "Leo núi đơn giản (Simple Hill Climbing)",
+            "Leo núi dốc nhất (Steepest-Ascent Hill Climbing)"
         )
         self.algo_cb.current(0)
         self.algo_cb.grid(row=0, column=1, columnspan=2, pady=5)
@@ -668,7 +780,6 @@ class PuzzleApp:
                 act_char = item['action'][0] if item['action'] else ""
                 info_text = f" , {item['parent_name']} , {act_char} , {item['cost']} }} ➔ Node {item['name']}"
                 
-                # CẬP NHẬT: Ép str() để đảm bảo các thuật toán cũ lưu int không bị sập hàm
                 is_loai = "Loại" in str(item['cost'])
                 if is_loai:
                     color = "#e74c3c"
@@ -751,6 +862,10 @@ class PuzzleApp:
             self.generator = greedy_algorithm(start_state, goal_state, self.get_next_name)
         elif "A*" in algo:
             self.generator = a_star_algorithm(start_state, goal_state, self.get_next_name)
+        elif "Leo núi đơn giản" in algo:
+            self.generator = simple_hill_climbing(start_state, goal_state, self.get_next_name)
+        elif "Leo núi dốc nhất" in algo:
+            self.generator = steepest_ascent_hill_climbing(start_state, goal_state, self.get_next_name)
         else:
             self.generator = dfs_algorithm(start_state, goal_state, self.get_next_name)
 
@@ -789,7 +904,7 @@ class PuzzleApp:
                 self.btn_auto.config(state="disabled")
                 
         except StopIteration:
-            self.lbl_status.config(text="❌ Thất bại: Đã duyệt hết không gian trạng thái!", fg="#c0392b")
+            self.lbl_status.config(text="❌ Thất bại: Đạt cực đại cục bộ / Đã duyệt hết!", fg="#c0392b")
             self.is_solved = True
             
             self.btn_step.config(state="disabled")
