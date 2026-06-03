@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from collections import deque
 import heapq
+import random
 
 class Node:
     def __init__(self, state, parent, action, depth, name=""):
@@ -17,7 +18,6 @@ def get_neighbors(node):
     zero_idx = state.find('0')
     row, col = divmod(zero_idx, 3)
     
-    # Thứ tự duyệt chuẩn: Trái, Phải, Trên, Dưới (L, R, U, D)
     moves = [(0, -1, "Left"), (0, 1, "Right"), (-1, 0, "Up"), (1, 0, "Down")]
     
     for r, c, act in moves:
@@ -41,6 +41,18 @@ def get_manhattan_distance(state, goal):
             r2, c2 = divmod(goal_idx, 3)
             distance += abs(r1 - r2) + abs(c1 - c2)
     return distance
+
+def get_eval_value(curr_state, new_state, goal_state, eval_type):
+    if eval_type == "Số ô sai vị trí":
+        return sum(1 for s, g in zip(new_state, goal_state) if s != g and s != '0')
+    
+    elif eval_type == "Giá trị ô swap":
+        if not curr_state: return 9 
+        zero_idx_curr = curr_state.find('0')
+        return int(new_state[zero_idx_curr])
+        
+    else: 
+        return get_manhattan_distance(new_state, goal_state)
 
 def is_in_path(node, target_state):
     curr = node
@@ -78,19 +90,57 @@ class ScrollableFrame(tk.Frame):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         self.canvas.yview_moveto(0)
 
-# =========================================================================
-# ======================== THUẬT TOÁN LEO NÚI ĐÃ SỬA ======================
-# =========================================================================
 
-def simple_hill_climbing(start_state, goal_state, get_name_func):
-    """
-    Leo núi đơn giản (Simple Hill Climbing):
-    - Cost = Giá trị của ô vừa đổi vị trí với số 0.
-    - Sinh ra lân cận nào CÓ COST NHỎ HƠN hiện tại -> CHỌN LUÔN và ngừng sinh lân cận khác.
-    """
+def local_beam_search(start_state, goal_state, get_name_func, eval_type, k):
     start_node = Node(start_state, None, "Start", 0, get_name_func())
-    # Gán Cost ban đầu = 9 (lớn hơn mọi ô 1-8) để bước đi đầu tiên luôn nhỏ hơn và được chọn
-    start_node.h = 9 
+    start_node.h = get_eval_value(None, start_state, goal_state, eval_type)
+    
+    reached = {start_state}
+    
+    if start_state == goal_state:
+        yield [start_node], [{"name": start_node.name, "action": "Start", "state": start_state, "is_goal": True, "parent_name": "None", "cost": start_node.h}], reached, start_node
+        return
+
+    current_state_set = [start_node]
+    
+    while True:
+        neighbor_states = []
+        new_frontier_logs = []
+        goal_node = None
+        
+        for state_node in current_state_set:
+            for new_state, act in get_neighbors(state_node):
+                if new_state not in reached:
+                    child = Node(new_state, state_node, act, state_node.depth + 1, get_name_func())
+                    child.h = get_eval_value(state_node.state, new_state, goal_state, eval_type)
+                    
+                    neighbor_states.append(child)
+                    reached.add(new_state)
+                    
+                    is_goal = (new_state == goal_state)
+                    new_frontier_logs.append({
+                        "name": child.name, "action": act, "state": child.state, 
+                        "is_goal": is_goal, "parent_name": state_node.name, "cost": child.h
+                    })
+                    
+                    if is_goal and not goal_node:
+                        goal_node = child
+        
+        if not neighbor_states:
+            yield current_state_set, "Stuck", reached, None
+            return
+        
+        yield current_state_set, new_frontier_logs, reached, goal_node
+        
+        if goal_node:
+            return
+            
+        neighbor_states.sort(key=lambda x: x.h)
+        current_state_set = neighbor_states[:k]
+
+def simple_hill_climbing(start_state, goal_state, get_name_func, eval_type):
+    start_node = Node(start_state, None, "Start", 0, get_name_func())
+    start_node.h = get_eval_value(None, start_state, goal_state, eval_type)
     curr = start_node
     reached = {start_state}
     
@@ -103,34 +153,24 @@ def simple_hill_climbing(start_state, goal_state, get_name_func):
         next_node = None
         
         for new_state, act in get_neighbors(curr):
-            # Lấy giá trị của ô vừa hoán đổi với số '0' làm COST
-            zero_idx_curr = curr.state.find('0')
-            swapped_tile_val = int(new_state[zero_idx_curr])
-            
             child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
-            child.h = swapped_tile_val 
+            child.h = get_eval_value(curr.state, new_state, goal_state, eval_type)
             
             is_goal = (new_state == goal_state)
             
             new_frontier_logs.append({
-                "name": child.name, 
-                "action": act, 
-                "state": child.state, 
-                "is_goal": is_goal, 
-                "parent_name": curr.name, 
-                "cost": child.h
+                "name": child.name, "action": act, "state": child.state, 
+                "is_goal": is_goal, "parent_name": curr.name, "cost": child.h
             })
             
-            # Simple Hill Climbing: Nếu thấy lân cận TỐT HƠN (Cost nhỏ hơn), lập tức DỪNG vòng lặp sinh lân cận
             if child.h < curr.h:
                 next_node = child
                 break 
                 
-        # Trả về các node ĐÃ SINH để hiển thị (Nếu break sớm thì mảng logs sẽ ngắn)
         yield curr, new_frontier_logs, reached, None
         
-        # Nếu không có node nào tốt hơn -> Đã đạt Cực tiểu cục bộ (Local Minimum)
         if next_node is None:
+            yield curr, "Stuck", reached, None
             return
             
         if next_node.state == goal_state:
@@ -141,14 +181,9 @@ def simple_hill_climbing(start_state, goal_state, get_name_func):
         curr = next_node
         reached.add(curr.state)
 
-def steepest_ascent_hill_climbing(start_state, goal_state, get_name_func):
-    """
-    Leo núi dốc nhất (Steepest-Ascent Hill Climbing):
-    - Cost = Giá trị của ô vừa đổi vị trí với số 0.
-    - Sinh TẤT CẢ lân cận, tìm node có Cost TỐT NHẤT (nhỏ nhất) để đi tiếp.
-    """
+def steepest_ascent_hill_climbing(start_state, goal_state, get_name_func, eval_type):
     start_node = Node(start_state, None, "Start", 0, get_name_func())
-    start_node.h = 9
+    start_node.h = get_eval_value(None, start_state, goal_state, eval_type)
     curr = start_node
     reached = {start_state}
     
@@ -162,33 +197,24 @@ def steepest_ascent_hill_climbing(start_state, goal_state, get_name_func):
         best_h = float('inf')
         
         for new_state, act in get_neighbors(curr):
-            # Lấy giá trị của ô vừa hoán đổi với số '0' làm COST
-            zero_idx_curr = curr.state.find('0')
-            swapped_tile_val = int(new_state[zero_idx_curr])
-            
             child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
-            child.h = swapped_tile_val
+            child.h = get_eval_value(curr.state, new_state, goal_state, eval_type)
             
             is_goal = (new_state == goal_state)
             
             new_frontier_logs.append({
-                "name": child.name, 
-                "action": act, 
-                "state": child.state, 
-                "is_goal": is_goal, 
-                "parent_name": curr.name, 
-                "cost": child.h
+                "name": child.name, "action": act, "state": child.state, 
+                "is_goal": is_goal, "parent_name": curr.name, "cost": child.h
             })
             
-            # Tìm node có Cost NHỎ NHẤT trong số TẤT CẢ các lân cận
             if child.h < best_h:
                 best_h = child.h
                 best_node = child
                 
         yield curr, new_frontier_logs, reached, None
         
-        # Nếu node tốt nhất tìm được vẫn KHÔNG tốt hơn node hiện tại -> Cực tiểu cục bộ
         if best_node is None or best_h >= curr.h:
+            yield curr, "Stuck", reached, None
             return
             
         if best_node.state == goal_state:
@@ -199,14 +225,103 @@ def steepest_ascent_hill_climbing(start_state, goal_state, get_name_func):
         curr = best_node
         reached.add(curr.state)
 
-
-# =========================================================================
-# ========================= CÁC THUẬT TOÁN KHÁC ===========================
-# =========================================================================
-
-def a_star_algorithm(start_state, goal_state, get_name_func):
+def stochastic_hill_climbing(start_state, goal_state, get_name_func, eval_type):
     start_node = Node(start_state, None, "Start", 0, get_name_func())
-    start_node.h = get_manhattan_distance(start_state, goal_state)
+    start_node.h = get_eval_value(None, start_state, goal_state, eval_type)
+    curr = start_node
+    reached = {start_state}
+    
+    if curr.state == goal_state:
+        yield curr, [{"name": curr.name, "action": "Start", "state": curr.state, "is_goal": True, "parent_name": "None", "cost": 0}], reached, curr
+        return
+
+    while True:
+        new_frontier_logs = []
+        better_neighbors = []
+        
+        for new_state, act in get_neighbors(curr):
+            child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+            child.h = get_eval_value(curr.state, new_state, goal_state, eval_type)
+            
+            is_goal = (new_state == goal_state)
+            
+            new_frontier_logs.append({
+                "name": child.name, "action": act, "state": child.state, 
+                "is_goal": is_goal, "parent_name": curr.name, "cost": child.h
+            })
+            
+            if child.h < curr.h:
+                better_neighbors.append(child)
+                
+        yield curr, new_frontier_logs, reached, None
+        
+        if not better_neighbors:
+            yield curr, "Stuck", reached, None
+            return
+            
+        next_node = random.choice(better_neighbors)
+        
+        if next_node.state == goal_state:
+            reached.add(next_node.state)
+            yield next_node, [], reached, next_node
+            return
+            
+        curr = next_node
+        reached.add(curr.state)
+
+def random_restart_hill_climbing(start_state, goal_state, get_name_func, eval_type, max_restart):
+    reached = set()
+    
+    for i in range(1, max_restart + 1):
+        start_node = Node(start_state, None, f"Start (Lượt {i})", 0, get_name_func())
+        start_node.h = get_eval_value(None, start_state, goal_state, eval_type)
+        curr = start_node
+        
+        reached.add(curr.state)
+        
+        if curr.state == goal_state:
+            yield curr, [{"name": curr.name, "action": curr.action, "state": curr.state, "is_goal": True, "parent_name": "None", "cost": curr.h}], reached, curr
+            return
+
+        while True:
+            new_frontier_logs = []
+            better_neighbors = []
+            
+            for new_state, act in get_neighbors(curr):
+                child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+                child.h = get_eval_value(curr.state, new_state, goal_state, eval_type)
+                
+                is_goal = (new_state == goal_state)
+                
+                new_frontier_logs.append({
+                    "name": child.name, "action": act, "state": child.state, 
+                    "is_goal": is_goal, "parent_name": curr.name, "cost": child.h
+                })
+                
+                if child.h < curr.h:
+                    better_neighbors.append(child)
+                    
+            yield curr, new_frontier_logs, reached, None
+            
+            if not better_neighbors:
+                yield curr, "Stuck", reached, None 
+                break 
+                
+            next_node = random.choice(better_neighbors)
+            
+            if next_node.state == goal_state:
+                reached.add(next_node.state)
+                yield next_node, [], reached, next_node
+                return
+                
+            curr = next_node
+            reached.add(curr.state)
+
+
+
+def a_star_algorithm(start_state, goal_state, get_name_func, eval_type):
+    start_node = Node(start_state, None, "Start", 0, get_name_func())
+    start_node.h = get_eval_value(None, start_state, goal_state, eval_type)
     start_node.g = 0 
     start_node.f = start_node.g + start_node.h
     
@@ -233,8 +348,10 @@ def a_star_algorithm(start_state, goal_state, get_name_func):
         new_frontier_logs = []
         
         for new_state, act in get_neighbors(curr):
-            h_new = get_manhattan_distance(new_state, goal_state)
-            g_new = curr.g + h_new
+            h_new = get_eval_value(curr.state, new_state, goal_state, eval_type)
+            
+            step_cost = get_eval_value(curr.state, new_state, goal_state, "Giá trị ô swap") if eval_type == "Giá trị ô swap" else 1
+            g_new = curr.g + step_cost
             f_new = g_new + h_new
             
             if new_state in reached and g_new >= reached[new_state]:
@@ -251,23 +368,19 @@ def a_star_algorithm(start_state, goal_state, get_name_func):
             heapq.heappush(frontier, (child.f, counter, child))
             
             new_frontier_logs.append({
-                "name": child.name, 
-                "action": act, 
-                "state": child.state, 
-                "is_goal": (new_state == goal_state), 
-                "parent_name": curr.name, 
+                "name": child.name, "action": act, "state": child.state, 
+                "is_goal": (new_state == goal_state), "parent_name": curr.name, 
                 "cost": f"{child.g}+{child.h}" 
             })
             
         yield curr, new_frontier_logs, set(reached.keys()), None
 
-def ida_star_algorithm(start_state, goal_state, get_name_func, reset_name_func=None):
-    start_h = get_manhattan_distance(start_state, goal_state)
+def ida_star_algorithm(start_state, goal_state, get_name_func, reset_name_func, eval_type):
+    start_h = get_eval_value(None, start_state, goal_state, eval_type)
     threshold = start_h 
     
     while True:
-        if reset_name_func:
-            reset_name_func()
+        if reset_name_func: reset_name_func()
             
         start_node = Node(start_state, None, "Start", 0, get_name_func())
         start_node.h = start_h
@@ -291,8 +404,9 @@ def ida_star_algorithm(start_state, goal_state, get_name_func, reset_name_func=N
             new_frontier_logs = []
             for new_state, act in get_neighbors(curr):
                 if not is_in_path(curr, new_state):
-                    h_new = get_manhattan_distance(new_state, goal_state)
-                    g_new = curr.g + h_new
+                    h_new = get_eval_value(curr.state, new_state, goal_state, eval_type)
+                    step_cost = get_eval_value(curr.state, new_state, goal_state, "Giá trị ô swap") if eval_type == "Giá trị ô swap" else 1
+                    g_new = curr.g + step_cost
                     f_new = g_new + h_new
                     
                     child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
@@ -310,12 +424,8 @@ def ida_star_algorithm(start_state, goal_state, get_name_func, reset_name_func=N
                         cost_str = f"{child.g}+{child.h}"
                         
                     new_frontier_logs.append({
-                        "name": child.name, 
-                        "action": act, 
-                        "state": child.state, 
-                        "is_goal": False, 
-                        "parent_name": curr.name, 
-                        "cost": cost_str
+                        "name": child.name, "action": act, "state": child.state, 
+                        "is_goal": False, "parent_name": curr.name, "cost": cost_str
                     })
                     
             yield curr, new_frontier_logs, iteration_reached, None
@@ -325,166 +435,7 @@ def ida_star_algorithm(start_state, goal_state, get_name_func, reset_name_func=N
             
         threshold = next_threshold
 
-def bfs_optimized(start_state, goal_state, get_name_func):
-    start_node = Node(start_state, None, "Start", 0, get_name_func())
-    frontier = deque([start_node])
-    reached = {start_state}
-    
-    if start_state == goal_state:
-        yield start_node, [{"name": start_node.name, "action": "Start", "state": start_state, "is_goal": True, "parent_name": "None", "cost": 0}], reached, start_node
-        return
-
-    while frontier:
-        curr = frontier.popleft()
-        new_frontier_logs = []
-        
-        for new_state, act in get_neighbors(curr):
-            if new_state not in reached:
-                reached.add(new_state)
-                child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
-                is_goal = (new_state == goal_state)
-                
-                new_frontier_logs.append({"name": child.name, "action": act, "state": child.state, "is_goal": is_goal, "parent_name": curr.name, "cost": child.depth})
-                
-                if is_goal:
-                    yield curr, new_frontier_logs, reached, child
-                    return
-                frontier.append(child)
-                
-        yield curr, new_frontier_logs, reached, None
-
-def bfs_classic(start_state, goal_state, get_name_func):
-    start_node = Node(start_state, None, "Start", 0, get_name_func())
-    frontier = deque([start_node])
-    explored = set()
-    
-    while frontier:
-        curr = frontier.popleft()
-        explored.add(curr.state)
-        new_frontier_logs = []
-        
-        for new_state, act in get_neighbors(curr):
-            in_frontier = any(n.state == new_state for n in frontier)
-            if new_state not in explored and not in_frontier:
-                child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
-                is_goal = (new_state == goal_state)
-                
-                new_frontier_logs.append({"name": child.name, "action": act, "state": child.state, "is_goal": is_goal, "parent_name": curr.name, "cost": child.depth})
-                
-                if is_goal:
-                    yield curr, new_frontier_logs, explored, child
-                    return
-                frontier.append(child)
-                
-        yield curr, new_frontier_logs, explored, None
-
-def bfs_generic(start_state, goal_state, get_name_func):
-    start_node = Node(start_state, None, "Start", 0, get_name_func())
-    frontier = deque([start_node])
-    reached = set()
-    
-    while frontier:
-        curr = frontier.popleft()
-        reached.add(curr.state)
-        
-        if curr.state == goal_state:
-            yield curr, [{"name": curr.name, "action": "", "state": curr.state, "is_goal": True, "parent_name": curr.parent.name if curr.parent else "None", "cost": curr.depth}], reached, curr
-            return
-            
-        new_frontier_logs = []
-        for new_state, act in get_neighbors(curr):
-            in_frontier = any(n.state == new_state for n in frontier)
-            if new_state not in reached and not in_frontier:
-                child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
-                new_frontier_logs.append({"name": child.name, "action": act, "state": child.state, "is_goal": False, "parent_name": curr.name, "cost": child.depth})
-                frontier.append(child)
-                
-        yield curr, new_frontier_logs, reached, None
-
-def dfs_algorithm(start_state, goal_state, get_name_func):
-    start_node = Node(start_state, None, "Start", 0, get_name_func())
-    frontier = [start_node]
-    reached = {start_state}
-    
-    if start_state == goal_state:
-        yield start_node, [{"name": start_node.name, "action": "Start", "state": start_state, "is_goal": True, "parent_name": "None", "cost": 0}], reached, start_node
-        return
-
-    while frontier:
-        curr = frontier.pop()
-        new_frontier_logs = []
-        
-        for new_state, act in get_neighbors(curr):
-            in_frontier = any(n.state == new_state for n in frontier)
-            if new_state not in reached and not in_frontier:
-                reached.add(new_state)
-                child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
-                is_goal = (new_state == goal_state)
-                
-                new_frontier_logs.append({"name": child.name, "action": act, "state": child.state, "is_goal": is_goal, "parent_name": curr.name, "cost": child.depth})
-                
-                if is_goal:
-                    yield curr, new_frontier_logs, reached, child
-                    return
-                frontier.append(child)
-                
-        yield curr, new_frontier_logs, reached, None
-
-def ids_algorithm(start_state, goal_state, get_name_func, reset_name_func=None):
-    limit = 0
-    
-    while True:
-        if reset_name_func:
-            reset_name_func()
-            
-        start_node = Node(start_state, None, "Start", 0, get_name_func())
-        frontier = [start_node]
-        cutoff_occurred = False
-        
-        iteration_reached = {start_state}
-        
-        while frontier:
-            curr = frontier.pop()
-            
-            if curr.state == goal_state:
-                parent_name = curr.parent.name if curr.parent else "None"
-                yield curr, [{"name": curr.name, "action": curr.action, "state": curr.state, "is_goal": True, "parent_name": parent_name, "cost": curr.depth}], iteration_reached, curr
-                return
-            
-            if curr.depth >= limit:
-                cutoff_occurred = True
-                frontier_yield_data = "Cutoff"  
-            
-            else:
-                new_frontier_logs = []
-                for new_state, act in get_neighbors(curr):
-                    
-                    if not is_in_path(curr, new_state):
-                        child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
-                        new_frontier_logs.append({
-                            "name": child.name, 
-                            "action": act, 
-                            "state": child.state, 
-                            "is_goal": False, 
-                            "parent_name": curr.name, 
-                            "cost": child.depth
-                        })
-                        frontier.append(child)
-                        iteration_reached.add(new_state)
-                        
-                frontier_yield_data = new_frontier_logs
-                
-            yield curr, frontier_yield_data, iteration_reached, None
-            
-        if not cutoff_occurred:
-            break
-            
-        limit += 1
-
-def ucs_algorithm(start_state, goal_state, get_name_func):
-    def count_diff(state):
-        return sum(1 for s, g in zip(state, goal_state) if s != g)
-
+def ucs_algorithm(start_state, goal_state, get_name_func, eval_type):
     start_node = Node(start_state, None, "Start", 0, get_name_func())
     start_node.path_cost = 0
     
@@ -508,7 +459,7 @@ def ucs_algorithm(start_state, goal_state, get_name_func):
         new_frontier_logs = []
         
         for new_state, act in get_neighbors(curr):
-            step_cost = count_diff(new_state)
+            step_cost = get_eval_value(curr.state, new_state, goal_state, eval_type)
             new_cost = curr.path_cost + step_cost 
             
             if new_state not in reached or new_cost < reached[new_state]:
@@ -520,23 +471,20 @@ def ucs_algorithm(start_state, goal_state, get_name_func):
                 heapq.heappush(frontier, (new_cost, counter, child))
                 
                 new_frontier_logs.append({
-                    "name": child.name, 
-                    "action": act, 
-                    "state": child.state, 
-                    "is_goal": (new_state == goal_state), 
-                    "parent_name": curr.name, 
+                    "name": child.name, "action": act, "state": child.state, 
+                    "is_goal": (new_state == goal_state), "parent_name": curr.name, 
                     "cost": new_cost
                 })
                 
         yield curr, new_frontier_logs, set(reached.keys()), None
 
-def greedy_algorithm(start_state, goal_state, get_name_func):
+def greedy_algorithm(start_state, goal_state, get_name_func, eval_type):
     start_node = Node(start_state, None, "Start", 0, get_name_func())
     
     counter = 0  
     frontier = []
     
-    h_start = get_manhattan_distance(start_state, goal_state)
+    h_start = get_eval_value(None, start_state, goal_state, eval_type)
     heapq.heappush(frontier, (h_start, counter, start_node))
     
     in_frontier = {start_state}
@@ -562,26 +510,138 @@ def greedy_algorithm(start_state, goal_state, get_name_func):
             if new_state not in reached and new_state not in in_frontier:
                 child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
                 
-                h = get_manhattan_distance(new_state, goal_state)
+                h = get_eval_value(curr.state, new_state, goal_state, eval_type)
                 
                 counter += 1
                 heapq.heappush(frontier, (h, counter, child))
                 in_frontier.add(new_state)
                 
                 new_frontier_logs.append({
-                    "name": child.name, 
-                    "action": act, 
-                    "state": child.state, 
-                    "is_goal": (new_state == goal_state), 
-                    "parent_name": curr.name, 
+                    "name": child.name, "action": act, "state": child.state, 
+                    "is_goal": (new_state == goal_state), "parent_name": curr.name, 
                     "cost": h 
                 })
                 
         yield curr, new_frontier_logs, reached, None
 
-# =========================================================================
-# =============================== LỚP UI ==================================
-# =========================================================================
+def bfs_optimized(start_state, goal_state, get_name_func):
+    start_node = Node(start_state, None, "Start", 0, get_name_func())
+    frontier = deque([start_node])
+    reached = {start_state}
+    if start_state == goal_state:
+        yield start_node, [{"name": start_node.name, "action": "Start", "state": start_state, "is_goal": True, "parent_name": "None", "cost": 0}], reached, start_node
+        return
+    while frontier:
+        curr = frontier.popleft()
+        new_frontier_logs = []
+        for new_state, act in get_neighbors(curr):
+            if new_state not in reached:
+                reached.add(new_state)
+                child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+                is_goal = (new_state == goal_state)
+                new_frontier_logs.append({"name": child.name, "action": act, "state": child.state, "is_goal": is_goal, "parent_name": curr.name, "cost": child.depth})
+                if is_goal:
+                    yield curr, new_frontier_logs, reached, child
+                    return
+                frontier.append(child)
+        yield curr, new_frontier_logs, reached, None
+
+def bfs_classic(start_state, goal_state, get_name_func):
+    start_node = Node(start_state, None, "Start", 0, get_name_func())
+    frontier = deque([start_node])
+    explored = set()
+    while frontier:
+        curr = frontier.popleft()
+        explored.add(curr.state)
+        new_frontier_logs = []
+        for new_state, act in get_neighbors(curr):
+            in_frontier = any(n.state == new_state for n in frontier)
+            if new_state not in explored and not in_frontier:
+                child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+                is_goal = (new_state == goal_state)
+                new_frontier_logs.append({"name": child.name, "action": act, "state": child.state, "is_goal": is_goal, "parent_name": curr.name, "cost": child.depth})
+                if is_goal:
+                    yield curr, new_frontier_logs, explored, child
+                    return
+                frontier.append(child)
+        yield curr, new_frontier_logs, explored, None
+
+def bfs_generic(start_state, goal_state, get_name_func):
+    start_node = Node(start_state, None, "Start", 0, get_name_func())
+    frontier = deque([start_node])
+    reached = set()
+    while frontier:
+        curr = frontier.popleft()
+        reached.add(curr.state)
+        if curr.state == goal_state:
+            yield curr, [{"name": curr.name, "action": "", "state": curr.state, "is_goal": True, "parent_name": curr.parent.name if curr.parent else "None", "cost": curr.depth}], reached, curr
+            return
+        new_frontier_logs = []
+        for new_state, act in get_neighbors(curr):
+            in_frontier = any(n.state == new_state for n in frontier)
+            if new_state not in reached and not in_frontier:
+                child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+                new_frontier_logs.append({"name": child.name, "action": act, "state": child.state, "is_goal": False, "parent_name": curr.name, "cost": child.depth})
+                frontier.append(child)
+        yield curr, new_frontier_logs, reached, None
+
+def dfs_algorithm(start_state, goal_state, get_name_func):
+    start_node = Node(start_state, None, "Start", 0, get_name_func())
+    frontier = [start_node]
+    reached = {start_state}
+    if start_state == goal_state:
+        yield start_node, [{"name": start_node.name, "action": "Start", "state": start_state, "is_goal": True, "parent_name": "None", "cost": 0}], reached, start_node
+        return
+    while frontier:
+        curr = frontier.pop()
+        new_frontier_logs = []
+        for new_state, act in get_neighbors(curr):
+            in_frontier = any(n.state == new_state for n in frontier)
+            if new_state not in reached and not in_frontier:
+                reached.add(new_state)
+                child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+                is_goal = (new_state == goal_state)
+                new_frontier_logs.append({"name": child.name, "action": act, "state": child.state, "is_goal": is_goal, "parent_name": curr.name, "cost": child.depth})
+                if is_goal:
+                    yield curr, new_frontier_logs, reached, child
+                    return
+                frontier.append(child)
+        yield curr, new_frontier_logs, reached, None
+
+def ids_algorithm(start_state, goal_state, get_name_func, reset_name_func=None):
+    limit = 0
+    while True:
+        if reset_name_func: reset_name_func()
+        start_node = Node(start_state, None, "Start", 0, get_name_func())
+        frontier = [start_node]
+        cutoff_occurred = False
+        iteration_reached = {start_state}
+        while frontier:
+            curr = frontier.pop()
+            if curr.state == goal_state:
+                parent_name = curr.parent.name if curr.parent else "None"
+                yield curr, [{"name": curr.name, "action": curr.action, "state": curr.state, "is_goal": True, "parent_name": parent_name, "cost": curr.depth}], iteration_reached, curr
+                return
+            if curr.depth >= limit:
+                cutoff_occurred = True
+                frontier_yield_data = "Cutoff"  
+            else:
+                new_frontier_logs = []
+                for new_state, act in get_neighbors(curr):
+                    if not is_in_path(curr, new_state):
+                        child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+                        new_frontier_logs.append({
+                            "name": child.name, "action": act, "state": child.state, 
+                            "is_goal": False, "parent_name": curr.name, "cost": child.depth
+                        })
+                        frontier.append(child)
+                        iteration_reached.add(new_state)
+                frontier_yield_data = new_frontier_logs
+            yield curr, frontier_yield_data, iteration_reached, None
+        if not cutoff_occurred:
+            break
+        limit += 1
+
 
 class PuzzleApp:
     def __init__(self, root):
@@ -632,47 +692,73 @@ class PuzzleApp:
         tk.Label(self.controls_frame, text="Thuật toán:", bg="white", font=("Arial", 10)).grid(row=0, column=0, sticky="w")
         self.algo_var = tk.StringVar()
         self.algo_cb = ttk.Combobox(self.controls_frame, textvariable=self.algo_var, state="readonly", width=40)
-        
         self.algo_cb['values'] = (
             "BFS Tối ưu (Early Goal + Reached Sớm)",
             "BFS Cổ điển (Early Goal + Explored Muộn)",
             "BFS Generic (Late Goal + Reached Muộn)",
             "DFS (LIFO Stack)",
-            "IDS" ,
+            "IDS",
             "UCS (Uniform Cost Search)",
-            "Greedy Search (Tham lam - Manhattan)",
+            "Greedy Search (Tham lam - Heuristic)",
             "A* (A Star)",
             "IDA* (Iterative Deepening A*)",
             "Leo núi đơn giản (Simple Hill Climbing)",
-            "Leo núi dốc nhất (Steepest-Ascent Hill Climbing)"
+            "Leo núi dốc nhất (Steepest-Ascent Hill Climbing)",
+            "Leo núi ngẫu nhiên (Stochastic Hill Climbing)",
+            "Leo núi khởi động lại ngẫu nhiên (Random Restart HC)",
+            "Local Beam Search (Tìm kiếm chùm cục bộ)"
         )
         self.algo_cb.current(0)
         self.algo_cb.grid(row=0, column=1, columnspan=2, pady=5)
         self.algo_cb.bind("<<ComboboxSelected>>", lambda e: self.reset_search())
         
-        tk.Label(self.controls_frame, text="Trạng thái đầu:", bg="white").grid(row=1, column=0, sticky="w")
+        tk.Label(self.controls_frame, text="Cost / Heuristic (Từ UCS):", bg="white", font=("Arial", 10)).grid(row=1, column=0, sticky="w")
+        self.eval_var = tk.StringVar()
+        self.eval_cb = ttk.Combobox(self.controls_frame, textvariable=self.eval_var, state="readonly", width=40)
+        self.eval_cb['values'] = ("Khoảng cách Manhattan", "Số ô sai vị trí", "Giá trị ô swap")
+        self.eval_cb.current(0)
+        self.eval_cb.grid(row=1, column=1, columnspan=2, pady=5)
+        self.eval_cb.bind("<<ComboboxSelected>>", lambda e: self.reset_search())
+
+        tk.Label(self.controls_frame, text="MAX_RESTART (Restart HC):", bg="white", font=("Arial", 10)).grid(row=2, column=0, sticky="w")
+        self.max_restart_var = tk.StringVar(value="3")
+        self.max_restart_sb = ttk.Spinbox(self.controls_frame, from_=1, to=100, textvariable=self.max_restart_var, width=10, state="disabled")
+        self.max_restart_sb.grid(row=2, column=1, sticky="w", pady=5)
+        self.max_restart_sb.bind("<KeyRelease>", lambda e: self.reset_search())
+        self.max_restart_sb.bind("<<Increment>>", lambda e: self.reset_search())
+        self.max_restart_sb.bind("<<Decrement>>", lambda e: self.reset_search())
+        
+        tk.Label(self.controls_frame, text="K (Local Beam Search):", bg="white", font=("Arial", 10)).grid(row=3, column=0, sticky="w")
+        self.k_var = tk.StringVar(value="3")
+        self.k_sb = ttk.Spinbox(self.controls_frame, from_=1, to=100, textvariable=self.k_var, width=10, state="disabled")
+        self.k_sb.grid(row=3, column=1, sticky="w", pady=5)
+        self.k_sb.bind("<KeyRelease>", lambda e: self.reset_search())
+        self.k_sb.bind("<<Increment>>", lambda e: self.reset_search())
+        self.k_sb.bind("<<Decrement>>", lambda e: self.reset_search())
+
+        tk.Label(self.controls_frame, text="Trạng thái đầu:", bg="white").grid(row=4, column=0, sticky="w")
         self.start_entry = tk.Entry(self.controls_frame, width=20, font=("Arial", 12))
         self.start_entry.insert(0, "123406758")
-        self.start_entry.grid(row=1, column=1, pady=5)
+        self.start_entry.grid(row=4, column=1, pady=5)
         
-        tk.Label(self.controls_frame, text="Trạng thái đích:", bg="white").grid(row=2, column=0, sticky="w")
+        tk.Label(self.controls_frame, text="Trạng thái đích:", bg="white").grid(row=5, column=0, sticky="w")
         self.goal_entry = tk.Entry(self.controls_frame, width=20, font=("Arial", 12))
         self.goal_entry.insert(0, "123456780")
-        self.goal_entry.grid(row=2, column=1, pady=5)
+        self.goal_entry.grid(row=5, column=1, pady=5)
         
         self.btn_reset = tk.Button(self.controls_frame, text="Khởi tạo lại", bg="#3498db", fg="white", font=("Arial", 10, "bold"), command=self.reset_search)
-        self.btn_reset.grid(row=3, column=0, pady=10, padx=5)
+        self.btn_reset.grid(row=6, column=0, pady=10, padx=5)
         
         self.btn_step = tk.Button(self.controls_frame, text="Chạy 1 Bước", bg="#f39c12", fg="white", font=("Arial", 10, "bold"), command=self.step_search)
-        self.btn_step.grid(row=3, column=1, pady=10, padx=5)
+        self.btn_step.grid(row=6, column=1, pady=10, padx=5)
         
         self.btn_auto = tk.Button(self.controls_frame, text="Chạy Tự Động", bg="#2ecc71", fg="white", font=("Arial", 10, "bold"), command=self.toggle_auto)
-        self.btn_auto.grid(row=3, column=2, pady=10, padx=5)
+        self.btn_auto.grid(row=6, column=2, pady=10, padx=5)
 
         self.info_frame = tk.LabelFrame(self.left_frame, text="Thống kê", font=("Arial", 12, "bold"), bg="#d1d8e0", padx=15, pady=15)
         self.info_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         
-        self.lbl_manhattan = tk.Label(self.info_frame, text="Manhattan Distance tới Đích: 0", bg="#d1d8e0", font=("Arial", 11, "bold"), fg="#c0392b")
+        self.lbl_manhattan = tk.Label(self.info_frame, text="Chi phí / Heuristic tới Đích: 0", bg="#d1d8e0", font=("Arial", 11, "bold"), fg="#c0392b")
         self.lbl_manhattan.pack(anchor="w", pady=2)
         
         self.lbl_depth = tk.Label(self.info_frame, text="Độ sâu hiện tại (Depth): 0", bg="#d1d8e0", font=("Arial", 11))
@@ -695,7 +781,7 @@ class PuzzleApp:
         header_frame.columnconfigure(1, weight=5, minsize=450)
         header_frame.columnconfigure(2, weight=3, minsize=300)
         
-        tk.Label(header_frame, text="Node", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=0, sticky="w", padx=10)
+        tk.Label(header_frame, text="Current Node", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=0, sticky="w", padx=10)
         tk.Label(header_frame, text="Frontier", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=1, sticky="w", padx=10)
         tk.Label(header_frame, text="Reached", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=2, sticky="w", padx=10)
         
@@ -729,8 +815,8 @@ class PuzzleApp:
         y_offset = 2
         if title:
             color = "#27ae60" if is_goal else "#2980b9"
-            canvas.create_text(27, 10, text=title, font=("Arial", 9, "bold"), fill=color)
-            y_offset = 20
+            canvas.create_text(27, 15, text=title, font=("Arial", 9, "bold"), fill=color, justify="center")
+            y_offset = 25
             
         for i, char in enumerate(state_str):
             r, c = divmod(i, 3)
@@ -747,7 +833,7 @@ class PuzzleApp:
                 
         return canvas
 
-    def add_log_row(self, curr_node, frontier_list, reached_set):
+    def add_log_row(self, curr_node_data, frontier_list, reached_set):
         row_frame = tk.Frame(self.log_scroll.scrollable_inner_frame, bg="white", highlightbackground="#ecf0f1", highlightthickness=1)
         row_frame.pack(fill=tk.X, pady=3, padx=5)
         
@@ -757,17 +843,24 @@ class PuzzleApp:
         
         f_node = tk.Frame(row_frame, bg="white")
         f_node.grid(row=0, column=0, sticky="nw", padx=10, pady=5)
-        if curr_node:
-            mb = self.create_mini_board_canvas(f_node, curr_node.state, title=f"Node {curr_node.name}")
-            mb.pack()
+        
+        if isinstance(curr_node_data, list):
+            for node in curr_node_data:
+                mb = self.create_mini_board_canvas(f_node, node.state, title=f"Node {node.name}\ncost: {node.h}")
+                mb.pack(pady=4)
+        elif curr_node_data:
+            mb = self.create_mini_board_canvas(f_node, curr_node_data.state, title=f"Node {curr_node_data.name}")
+            mb.pack(pady=4)
             
         f_front = tk.Frame(row_frame, bg="white")
         f_front.grid(row=0, column=1, sticky="nw", padx=10, pady=5)
         
         if frontier_list == "Cutoff":
             tk.Label(f_front, text="CUTOFF (Sinh ra nhưng vượt mốc)", bg="white", fg="#e74c3c", font=("Arial", 11, "bold")).pack(anchor="w")
+        elif frontier_list == "Stuck":
+            tk.Label(f_front, text="KẸT (Đạt cực đại/tiểu cục bộ) ➔ Dừng lại hoặc Restart...", bg="white", fg="#d35400", font=("Arial", 11, "bold")).pack(anchor="w")
         elif not frontier_list:
-            tk.Label(f_front, text="(Không được thêm vào Frontier)", bg="white", fg="gray", font=("Arial", 10, "italic")).pack(anchor="w")
+            tk.Label(f_front, text="(Không được thêm vào Frontier / Thoát vòng lặp)", bg="white", fg="gray", font=("Arial", 10, "italic")).pack(anchor="w")
         else:
             for item in frontier_list:
                 item_frame = tk.Frame(f_front, bg="white")
@@ -844,8 +937,32 @@ class PuzzleApp:
         self.draw_state_to_canvas(self.goal_board_canvas, goal_state)
         
         self.log_scroll.clear()
-            
+        
+        algo_idx = self.algo_cb.current()
         algo = self.algo_var.get()
+        eval_type = self.eval_var.get()
+        
+        if algo_idx >= 5:
+            self.eval_cb.config(state="readonly")
+        else:
+            self.eval_cb.config(state="disabled")
+            
+        if "Leo núi khởi động lại ngẫu nhiên" in algo:
+            self.max_restart_sb.config(state="normal")
+            try: max_res = int(self.max_restart_var.get())
+            except ValueError: max_res = 3
+        else:
+            self.max_restart_sb.config(state="disabled")
+            max_res = 1 
+            
+        if "Local Beam Search" in algo:
+            self.k_sb.config(state="normal")
+            try: k_val = int(self.k_var.get())
+            except ValueError: k_val = 3
+        else:
+            self.k_sb.config(state="disabled")
+            k_val = 1
+            
         if "Tối ưu" in algo:
             self.generator = bfs_optimized(start_state, goal_state, self.get_next_name)
         elif "Cổ điển" in algo:
@@ -853,19 +970,25 @@ class PuzzleApp:
         elif "Generic" in algo:
             self.generator = bfs_generic(start_state, goal_state, self.get_next_name)
         elif "IDA*" in algo:
-            self.generator = ida_star_algorithm(start_state, goal_state, self.get_next_name, self.reset_name_counter)
+            self.generator = ida_star_algorithm(start_state, goal_state, self.get_next_name, self.reset_name_counter, eval_type)
         elif "IDS" in algo:
             self.generator = ids_algorithm(start_state, goal_state, self.get_next_name, self.reset_name_counter)
         elif "UCS" in algo: 
-            self.generator = ucs_algorithm(start_state, goal_state, self.get_next_name)
+            self.generator = ucs_algorithm(start_state, goal_state, self.get_next_name, eval_type)
         elif "Greedy" in algo:
-            self.generator = greedy_algorithm(start_state, goal_state, self.get_next_name)
+            self.generator = greedy_algorithm(start_state, goal_state, self.get_next_name, eval_type)
         elif "A*" in algo:
-            self.generator = a_star_algorithm(start_state, goal_state, self.get_next_name)
+            self.generator = a_star_algorithm(start_state, goal_state, self.get_next_name, eval_type)
         elif "Leo núi đơn giản" in algo:
-            self.generator = simple_hill_climbing(start_state, goal_state, self.get_next_name)
+            self.generator = simple_hill_climbing(start_state, goal_state, self.get_next_name, eval_type)
         elif "Leo núi dốc nhất" in algo:
-            self.generator = steepest_ascent_hill_climbing(start_state, goal_state, self.get_next_name)
+            self.generator = steepest_ascent_hill_climbing(start_state, goal_state, self.get_next_name, eval_type)
+        elif "Leo núi ngẫu nhiên" in algo:
+            self.generator = stochastic_hill_climbing(start_state, goal_state, self.get_next_name, eval_type)
+        elif "Leo núi khởi động lại ngẫu nhiên" in algo:
+            self.generator = random_restart_hill_climbing(start_state, goal_state, self.get_next_name, eval_type, max_res)
+        elif "Local Beam Search" in algo:
+            self.generator = local_beam_search(start_state, goal_state, self.get_next_name, eval_type, k_val)
         else:
             self.generator = dfs_algorithm(start_state, goal_state, self.get_next_name)
 
@@ -873,8 +996,8 @@ class PuzzleApp:
         self.btn_auto.config(state="normal")
         self.lbl_status.config(text="Trạng thái: Đã khởi tạo.", fg="#2980b9")
         
-        md = get_manhattan_distance(start_state, goal_state)
-        self.lbl_manhattan.config(text=f"Manhattan Distance tới Đích: {md}")
+        md = get_eval_value(None, start_state, goal_state, eval_type) if algo_idx >= 5 else get_manhattan_distance(start_state, goal_state)
+        self.lbl_manhattan.config(text=f"Chi phí / Heuristic ban đầu: {md}")
         self.lbl_depth.config(text="Độ sâu hiện tại (Depth): 0")
         self.lbl_popped.config(text="Số Node đã duyệt (Pop): 0")
 
@@ -883,16 +1006,29 @@ class PuzzleApp:
             return
             
         try:
-            curr_node, frontier_logs, reached_set, goal_node = next(self.generator)
+            yielded_data = next(self.generator)
+            curr_data, frontier_logs, reached_set, goal_node = yielded_data
+            
             self.total_popped += 1
-            self.draw_state_to_canvas(self.curr_board_canvas, curr_node.state)
             
-            self.add_log_row(curr_node, frontier_logs, reached_set)
+            if isinstance(curr_data, list):
+                best_node = curr_data[0] if curr_data else None
+            else:
+                best_node = curr_data
             
-            md = get_manhattan_distance(curr_node.state, self.goal_entry.get().strip())
-            self.lbl_manhattan.config(text=f"Manhattan Distance tới Đích: {md}")
-            self.lbl_depth.config(text=f"Độ sâu hiện tại (Depth): {curr_node.depth}")
-            self.lbl_popped.config(text=f"Số Node đã duyệt (Pop): {self.total_popped}")
+            if best_node:
+                self.draw_state_to_canvas(self.curr_board_canvas, best_node.state)
+            
+            self.add_log_row(curr_data, frontier_logs, reached_set)
+            
+            if best_node:
+                algo_idx = self.algo_cb.current()
+                eval_type = self.eval_var.get()
+                md = get_eval_value(best_node.state, best_node.state, self.goal_entry.get().strip(), eval_type) if algo_idx >= 5 else get_manhattan_distance(best_node.state, self.goal_entry.get().strip())
+                
+                self.lbl_manhattan.config(text=f"Chi phí / Heuristic tới Đích: {md}")
+                self.lbl_depth.config(text=f"Độ sâu hiện tại (Depth): {best_node.depth}")
+            self.lbl_popped.config(text=f"Số Bước đã duyệt: {self.total_popped}")
             
             if goal_node:
                 self.is_solved = True
@@ -915,7 +1051,7 @@ class PuzzleApp:
         path = []
         curr = node
         while curr:
-            if curr.action != "Start":
+            if curr.action and not curr.action.startswith("Start") and curr.action != "Start":
                 path.append(f"{curr.action[0]}")
 
             curr = curr.parent
