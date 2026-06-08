@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 from collections import deque
 import heapq
 import random
+import math
 
 class Node:
     def __init__(self, state, parent, action, depth, name=""):
@@ -643,6 +644,277 @@ def ids_algorithm(start_state, goal_state, get_name_func, reset_name_func=None):
         limit += 1
 
 
+def simulated_annealing(start_state, goal_state, get_name_func, eval_type,
+                        initial_temp=100, cooling_rate=0.95,
+                        min_temp=0.1, max_restart=3):
+    start_cost = get_manhattan_distance(start_state, goal_state)
+    start_node = Node(start_state, None, "Start", 0, get_name_func())
+    start_node.cost = start_cost
+
+    if start_state == goal_state:
+        data = {"current": start_node, "candidate": None, "best": start_node,
+                "temperature": initial_temp, "accept_prob": 1.0,
+                "delta": 0, "accepted": True, "action": "",
+                "cost_history": [start_cost],
+                "temp_history": [initial_temp], "accepted_history": [True],
+                "iteration": 0,
+                "initial_temp": initial_temp,
+                "restart_count": 0, "max_restart": max_restart,
+                "min_temp": min_temp}
+        yield data, "SA", {start_state}, start_node
+        return
+
+    curr = start_node
+    best = start_node
+    T = initial_temp
+    cost_history = [start_cost]
+    temp_history = [initial_temp]
+    accepted_history = [True]
+    iteration = 0
+    restart_count = 0
+    reached = {start_state}
+
+    while True:
+        neighbors = get_neighbors(curr)
+        if not neighbors:
+            data = {"current": curr, "candidate": None, "best": best,
+                    "temperature": T, "accept_prob": 0, "delta": 0,
+                    "accepted": False, "action": "",
+                    "cost_history": cost_history, "temp_history": temp_history,
+                    "accepted_history": accepted_history, "iteration": iteration,
+                    "initial_temp": initial_temp, "restart_count": restart_count,
+                    "max_restart": max_restart, "min_temp": min_temp}
+            yield data, "SA_stuck", reached, None
+            return
+
+        new_state, act = random.choice(neighbors)
+        new_cost = get_manhattan_distance(new_state, goal_state)
+        delta = new_cost - curr.cost
+        accept_prob = min(1.0, math.exp(-delta / max(T, 0.001))) if delta > 0 else 1.0
+
+        iteration += 1
+        accepted = False
+        next_node = None
+
+        # Giảm T ngay sau mỗi iteration (trước khi xét chấp nhận)
+        T *= cooling_rate
+
+        if delta < 0 or random.random() < accept_prob:
+            child = Node(new_state, curr, act, curr.depth + 1, get_name_func())
+            child.cost = new_cost
+            next_node = child
+            reached.add(new_state)
+            accepted = True
+            if new_cost < best.cost:
+                best = child
+
+        cost_history.append(new_cost)
+        temp_history.append(T)
+        accepted_history.append(accepted)
+
+        candidate_node = Node(new_state, curr, act, curr.depth + 1, "?")
+        candidate_node.cost = new_cost
+
+        is_goal = (new_state == goal_state)
+        data = {"current": curr,
+                "candidate": candidate_node,
+                "next": next_node,
+                "best": best,
+                "temperature": T,
+                "accept_prob": accept_prob,
+                "delta": delta,
+                "accepted": accepted,
+                "action": act,
+                "cost_history": cost_history,
+                "temp_history": temp_history,
+                "accepted_history": accepted_history,
+                "iteration": iteration,
+                "initial_temp": initial_temp,
+                "restart_count": restart_count,
+                "max_restart": max_restart,
+                "min_temp": min_temp}
+
+        final_node = next_node if accepted else curr
+        yield data, "SA", reached, (final_node if is_goal else None)
+        if is_goal:
+            return
+
+        if next_node:
+            curr = next_node
+
+        if T <= min_temp:
+            if restart_count < max_restart - 1:
+                restart_count += 1
+                T = initial_temp
+                curr = start_node
+                cost_history.append(best.cost)
+                temp_history.append(T)
+                accepted_history.append(True)
+            else:
+                yield data, "SA_stuck", reached, None
+                return
+
+
+def generate_random_states(count, mode="belief", base_goal="123456780"):
+    if mode == "goal":
+        # Goal states: "readable", sát với classic goal (0-3 moves)
+        states = []
+        for _ in range(count):
+            state = base_goal
+            num_moves = random.randint(0, 3)
+            for _ in range(num_moves):
+                neighbors = get_neighbors(Node(state, None, None, 0))
+                if neighbors:
+                    state, _ = random.choice(neighbors)
+            states.append(state)
+        return states
+
+    if mode == "belief":
+        # Belief states: sinh từ 1 gốc chung để dễ hội tụ
+        if count <= 0:
+            return []
+        base_state = base_goal
+        num_moves = random.randint(15, 35)
+        for _ in range(num_moves):
+            neighbors = get_neighbors(Node(base_state, None, None, 0))
+            if neighbors:
+                base_state, _ = random.choice(neighbors)
+        states = [base_state]
+        for _ in range(count - 1):
+            s = base_state
+            extra = random.randint(1, 3)
+            for _ in range(extra):
+                neighbors = get_neighbors(Node(s, None, None, 0))
+                if neighbors:
+                    s, _ = random.choice(neighbors)
+            states.append(s)
+        return states
+
+    return []
+
+
+def belief_state_bfs(start_states, goal_states, get_name_func, max_depth=15):
+    goal_set = frozenset(goal_states)
+    n = len(start_states)
+
+    frontiers = [deque([(s, 0, [])]) for s in start_states]
+    explored_list = [{s} for s in start_states]
+    solved = [s in goal_set for s in start_states]
+    target_goal = None
+    state_names = {s: get_name_func() for s in start_states}
+    all_reached = set(start_states)
+    restart_flag = False
+    restart_reason = ""
+
+    round_robin_idx = 0
+
+    # If any start state is already at a goal, set target
+    for i, s in enumerate(start_states):
+        if solved[i]:
+            target_goal = s
+            break
+
+    while not all(solved):
+        found = False
+        for _ in range(n):
+            i = round_robin_idx % n
+            round_robin_idx += 1
+            if solved[i]:
+                continue
+            if not frontiers[i]:
+                continue
+
+            found = True
+            curr_state, depth, path = frontiers[i].popleft()
+
+            if depth >= max_depth:
+                continue
+
+            frontier_logs = []
+            for act_name in ["Left", "Right", "Up", "Down"]:
+                neighbors = get_neighbors(Node(curr_state, None, None, 0))
+                matching = [ns for ns, a in neighbors if a == act_name]
+                if not matching:
+                    continue
+                new_state = matching[0]
+
+                if new_state not in explored_list[i]:
+                    explored_list[i].add(new_state)
+                    all_reached.add(new_state)
+                    new_path = path + [act_name]
+
+                    if target_goal is not None:
+                        is_goal = (new_state == target_goal)
+                    else:
+                        is_goal = (new_state in goal_set)
+
+                    if new_state not in state_names:
+                        state_names[new_state] = get_name_func()
+
+                    frontier_logs.append({
+                        "state": new_state,
+                        "action": act_name,
+                        "from_state": curr_state,
+                        "is_goal": is_goal,
+                        "depth": depth + 1,
+                        "name": state_names[new_state],
+                        "belief_idx": i
+                    })
+
+                    if is_goal:
+                        if target_goal is None:
+                            target_goal = new_state
+                            restart_flag = True
+                            restart_reason = f"S{i+1} found goal {new_state}, other states continue toward target..."
+                        solved[i] = True
+
+                    if not is_goal and depth + 1 < max_depth:
+                        frontiers[i].append((new_state, depth + 1, new_path))
+
+            # Trạng thái hiện tại của tất cả các BFS
+            curr_states = []
+            queues = []
+            for j in range(n):
+                if solved[j]:
+                    curr_states.append(target_goal if target_goal else start_states[j])
+                    queues.append([])
+                elif frontiers[j]:
+                    f0 = frontiers[j][0]
+                    curr_states.append(f0[0] if f0 else start_states[j])
+                    queues.append([(s, d, p) for s, d, p in list(frontiers[j])[:6]])
+                else:
+                    curr_states.append(start_states[j])
+                    queues.append([])
+            curr_states = tuple(sorted(curr_states))
+
+            display_data = {
+                "belief": curr_states,
+                "depth": depth + 1,
+                "solved": solved[:],
+                "expanding": i,
+                "expanding_state": curr_state,
+                "frontier_logs": frontier_logs,
+                "explored_sets": explored_list,
+                "all_reached": all_reached,
+                "queues": queues,
+                "target_goal": target_goal,
+                "restart_reason": restart_reason,
+                "restart_flag": restart_flag
+            }
+
+            yield display_data, frontier_logs, all_reached, None
+            restart_flag = False
+            restart_reason = ""
+
+            if all(solved):
+                yield display_data, frontier_logs, all_reached, start_states
+                return
+            break
+
+        if not found:
+            break
+
+
 class PuzzleApp:
     def __init__(self, root):
         self.root = root
@@ -655,7 +927,12 @@ class PuzzleApp:
         self.auto_id = None
         self.is_auto_running = False  
         self.is_solved = False
+        self.is_sa_mode = False
+        self.is_belief_mode = False
+        self.belief_generated_states = None
+        self.belief_generated_goals = None
         self.total_popped = 0
+        self.belief_step_count = 0
         
         self.setup_ui()
         self.reset_search()
@@ -706,7 +983,9 @@ class PuzzleApp:
             "Leo núi dốc nhất (Steepest-Ascent Hill Climbing)",
             "Leo núi ngẫu nhiên (Stochastic Hill Climbing)",
             "Leo núi khởi động lại ngẫu nhiên (Random Restart HC)",
-            "Local Beam Search (Tìm kiếm chùm cục bộ)"
+            "Local Beam Search (Tìm kiếm chùm cục bộ)",
+            "Simulated Annealing (SA - Ủ mô phỏng)",
+            "Belief State BFS (Đa trạng thái)"
         )
         self.algo_cb.current(0)
         self.algo_cb.grid(row=0, column=1, columnspan=2, pady=5)
@@ -736,24 +1015,72 @@ class PuzzleApp:
         self.k_sb.bind("<<Increment>>", lambda e: self.reset_search())
         self.k_sb.bind("<<Decrement>>", lambda e: self.reset_search())
 
-        tk.Label(self.controls_frame, text="Trạng thái đầu:", bg="white").grid(row=4, column=0, sticky="w")
+        tk.Label(self.controls_frame, text="SA T₀:", bg="white", font=("Arial", 10)).grid(row=4, column=0, sticky="w")
+        self.sa_initial_temp_var = tk.StringVar(value="100")
+        self.sa_initial_temp_sb = ttk.Spinbox(self.controls_frame, from_=1, to=1000, textvariable=self.sa_initial_temp_var, width=8, state="disabled")
+        self.sa_initial_temp_sb.grid(row=4, column=1, sticky="w", pady=2)
+        self.sa_initial_temp_sb.bind("<KeyRelease>", lambda e: self.reset_search())
+        
+        tk.Label(self.controls_frame, text="  SA α:", bg="white", font=("Arial", 10)).grid(row=4, column=2, sticky="w")
+        self.sa_cooling_rate_var = tk.StringVar(value="0.95")
+        self.sa_cooling_rate_sb = ttk.Spinbox(self.controls_frame, from_=0.01, to=0.99, increment=0.01, textvariable=self.sa_cooling_rate_var, width=7, state="disabled")
+        self.sa_cooling_rate_sb.grid(row=4, column=3, sticky="w", pady=2)
+        self.sa_cooling_rate_sb.bind("<KeyRelease>", lambda e: self.reset_search())
+
+        tk.Label(self.controls_frame, text="SA T_min:", bg="white", font=("Arial", 10)).grid(row=5, column=0, sticky="w")
+        self.sa_min_temp_var = tk.StringVar(value="0.1")
+        self.sa_min_temp_sb = ttk.Spinbox(self.controls_frame, from_=0.001, to=10, increment=0.1, textvariable=self.sa_min_temp_var, width=8, state="disabled")
+        self.sa_min_temp_sb.grid(row=5, column=1, sticky="w", pady=2)
+        self.sa_min_temp_sb.bind("<KeyRelease>", lambda e: self.reset_search())
+
+        tk.Label(self.controls_frame, text="SA Max Restart:", bg="white", font=("Arial", 10)).grid(row=5, column=2, sticky="w")
+        self.sa_max_restart_var = tk.StringVar(value="3")
+        self.sa_max_restart_sb = ttk.Spinbox(self.controls_frame, from_=1, to=50, textvariable=self.sa_max_restart_var, width=8, state="disabled")
+        self.sa_max_restart_sb.grid(row=5, column=3, sticky="w", pady=2)
+        self.sa_max_restart_sb.bind("<KeyRelease>", lambda e: self.reset_search())
+
+        # Belief State controls
+        tk.Label(self.controls_frame, text="Số belief states:", bg="white", font=("Arial", 10)).grid(row=6, column=0, sticky="w")
+        self.belief_count_var = tk.StringVar(value="2")
+        self.belief_count_sb = ttk.Spinbox(self.controls_frame, from_=2, to=10, textvariable=self.belief_count_var, width=8, state="disabled")
+        self.belief_count_sb.grid(row=6, column=1, sticky="w", pady=2)
+
+        tk.Label(self.controls_frame, text="Số goal states:", bg="white", font=("Arial", 10)).grid(row=6, column=2, sticky="w")
+        self.belief_goal_count_var = tk.StringVar(value="1")
+        self.belief_goal_count_sb = ttk.Spinbox(self.controls_frame, from_=1, to=5, textvariable=self.belief_goal_count_var, width=7, state="disabled")
+        self.belief_goal_count_sb.grid(row=6, column=3, sticky="w", pady=2)
+
+        self.belief_gen_btn = tk.Button(self.controls_frame, text="Sinh ngẫu nhiên", bg="#9b59b6", fg="white", font=("Arial", 9, "bold"), state="disabled", command=self.generate_belief_states)
+        self.belief_gen_btn.grid(row=7, column=0, columnspan=2, pady=3, padx=5)
+
+        self.belief_state_frame = tk.Frame(self.controls_frame, bg="white")
+        self.belief_state_frame.grid(row=8, column=0, columnspan=4, pady=2, sticky="ew")
+        self.belief_state_label = tk.Label(self.belief_state_frame, text="", bg="white", font=("Arial", 8))
+        self.belief_state_label.pack()
+
+        self.belief_goal_frame = tk.Frame(self.controls_frame, bg="white")
+        self.belief_goal_frame.grid(row=9, column=0, columnspan=4, pady=2, sticky="ew")
+        self.belief_goal_label = tk.Label(self.belief_goal_frame, text="", bg="white", font=("Arial", 8))
+        self.belief_goal_label.pack()
+
+        tk.Label(self.controls_frame, text="Trạng thái đầu:", bg="white").grid(row=10, column=0, sticky="w")
         self.start_entry = tk.Entry(self.controls_frame, width=20, font=("Arial", 12))
         self.start_entry.insert(0, "123406758")
-        self.start_entry.grid(row=4, column=1, pady=5)
+        self.start_entry.grid(row=10, column=1, pady=5)
         
-        tk.Label(self.controls_frame, text="Trạng thái đích:", bg="white").grid(row=5, column=0, sticky="w")
+        tk.Label(self.controls_frame, text="Trạng thái đích:", bg="white").grid(row=11, column=0, sticky="w")
         self.goal_entry = tk.Entry(self.controls_frame, width=20, font=("Arial", 12))
         self.goal_entry.insert(0, "123456780")
-        self.goal_entry.grid(row=5, column=1, pady=5)
+        self.goal_entry.grid(row=11, column=1, pady=5)
         
         self.btn_reset = tk.Button(self.controls_frame, text="Khởi tạo lại", bg="#3498db", fg="white", font=("Arial", 10, "bold"), command=self.reset_search)
-        self.btn_reset.grid(row=6, column=0, pady=10, padx=5)
+        self.btn_reset.grid(row=12, column=0, pady=10, padx=5)
         
         self.btn_step = tk.Button(self.controls_frame, text="Chạy 1 Bước", bg="#f39c12", fg="white", font=("Arial", 10, "bold"), command=self.step_search)
-        self.btn_step.grid(row=6, column=1, pady=10, padx=5)
+        self.btn_step.grid(row=12, column=1, pady=10, padx=5)
         
         self.btn_auto = tk.Button(self.controls_frame, text="Chạy Tự Động", bg="#2ecc71", fg="white", font=("Arial", 10, "bold"), command=self.toggle_auto)
-        self.btn_auto.grid(row=6, column=2, pady=10, padx=5)
+        self.btn_auto.grid(row=12, column=2, pady=10, padx=5)
 
         self.info_frame = tk.LabelFrame(self.left_frame, text="Thống kê", font=("Arial", 12, "bold"), bg="#d1d8e0", padx=15, pady=15)
         self.info_frame.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -773,20 +1100,24 @@ class PuzzleApp:
         self.right_frame = tk.Frame(self.root, bg="white", bd=2, relief="groove")
         self.right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=20, pady=20)
         
-        tk.Label(self.right_frame, text="MÔ PHỎNG", font=("Arial", 14, "bold"), bg="#2c3e50", fg="white", pady=10).pack(fill=tk.X)
+        self.right_title = tk.Label(self.right_frame, text="MÔ PHỎNG", font=("Arial", 14, "bold"), bg="#2c3e50", fg="white", pady=10)
+        self.right_title.pack(fill=tk.X)
         
-        header_frame = tk.Frame(self.right_frame, bg="#bdc3c7")
-        header_frame.pack(fill=tk.X)
-        header_frame.columnconfigure(0, weight=1, minsize=100)
-        header_frame.columnconfigure(1, weight=5, minsize=450)
-        header_frame.columnconfigure(2, weight=3, minsize=300)
+        self.right_header = tk.Frame(self.right_frame, bg="#bdc3c7")
+        self.right_header.pack(fill=tk.X)
+        self.right_header.columnconfigure(0, weight=1, minsize=100)
+        self.right_header.columnconfigure(1, weight=5, minsize=450)
+        self.right_header.columnconfigure(2, weight=3, minsize=300)
         
-        tk.Label(header_frame, text="Current Node", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=0, sticky="w", padx=10)
-        tk.Label(header_frame, text="Frontier", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=1, sticky="w", padx=10)
-        tk.Label(header_frame, text="Reached", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=2, sticky="w", padx=10)
+        tk.Label(self.right_header, text="Current Node", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=0, sticky="w", padx=10)
+        tk.Label(self.right_header, text="Frontier", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=1, sticky="w", padx=10)
+        tk.Label(self.right_header, text="Reached", font=("Arial", 11, "bold"), bg="#bdc3c7", pady=5).grid(row=0, column=2, sticky="w", padx=10)
         
         self.log_scroll = ScrollableFrame(self.right_frame)
         self.log_scroll.pack(fill=tk.BOTH, expand=True)
+
+        # SA frame (hidden by default)
+        self.sa_frame = tk.Frame(self.right_frame, bg="white")
 
     def create_board_ui(self, parent, title):
         frame = tk.Frame(parent, bg="#ecf0f1")
@@ -833,17 +1164,378 @@ class PuzzleApp:
                 
         return canvas
 
+    def build_sa_ui(self):
+        for w in self.sa_frame.winfo_children():
+            w.destroy()
+
+        # Top: three boards (Current → Candidate → Best)
+        top = tk.Frame(self.sa_frame, bg="white")
+        top.pack(fill=tk.X, pady=10)
+
+        curr_f = tk.LabelFrame(top, text="Current State", font=("Arial", 10, "bold"), bg="white")
+        curr_f.pack(side=tk.LEFT, padx=10)
+        self.sa_curr_canvas = tk.Canvas(curr_f, width=140, height=140, bg="#34495e", highlightthickness=0)
+        self.sa_curr_canvas.pack(pady=5)
+        self.sa_curr_cost_label = tk.Label(curr_f, text="Cost: -", bg="white", font=("Arial", 10, "bold"), fg="#2980b9")
+        self.sa_curr_cost_label.pack()
+
+        # Arrow
+        arrow_f = tk.Frame(top, bg="white")
+        arrow_f.pack(side=tk.LEFT, padx=5)
+        tk.Label(arrow_f, text="  ➜  ", font=("Arial", 28, "bold"), bg="white", fg="#7f8c8d").pack(expand=True)
+
+        cand_f = tk.LabelFrame(top, text="Candidate", font=("Arial", 10, "bold"), bg="white")
+        cand_f.pack(side=tk.LEFT, padx=10)
+        self.sa_cand_canvas = tk.Canvas(cand_f, width=140, height=140, bg="#34495e", highlightthickness=0)
+        self.sa_cand_canvas.pack(pady=5)
+        self.sa_cand_cost_label = tk.Label(cand_f, text="Cost: -", bg="white", font=("Arial", 10, "bold"), fg="#e67e22")
+        self.sa_cand_cost_label.pack()
+        self.sa_cand_action_label = tk.Label(cand_f, text="", bg="white", font=("Arial", 9))
+        self.sa_cand_action_label.pack()
+
+        # Arrow
+        arrow2_f = tk.Frame(top, bg="white")
+        arrow2_f.pack(side=tk.LEFT, padx=5)
+        tk.Label(arrow2_f, text="  ➜  ", font=("Arial", 28, "bold"), bg="white", fg="#7f8c8d").pack(expand=True)
+
+        best_f = tk.LabelFrame(top, text="Best Found", font=("Arial", 10, "bold"), bg="white")
+        best_f.pack(side=tk.LEFT, padx=10)
+        self.sa_best_canvas = tk.Canvas(best_f, width=140, height=140, bg="#34495e", highlightthickness=0)
+        self.sa_best_canvas.pack(pady=5)
+        self.sa_best_cost_label = tk.Label(best_f, text="Cost: -", bg="white", font=("Arial", 10, "bold"), fg="#27ae60")
+        self.sa_best_cost_label.pack()
+
+        # Middle: temperature gauge + info
+        mid = tk.Frame(self.sa_frame, bg="white")
+        mid.pack(fill=tk.X, pady=8, padx=20)
+
+        gauge_f = tk.LabelFrame(mid, text="Temperature", font=("Arial", 10, "bold"), bg="white")
+        gauge_f.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+
+        self.sa_gauge_canvas = tk.Canvas(gauge_f, width=400, height=40, bg="white", highlightthickness=0)
+        self.sa_gauge_canvas.pack(pady=5, padx=10)
+        self.sa_temp_label = tk.Label(gauge_f, text="T = 100.0°C", bg="white", font=("Arial", 10, "bold"))
+        self.sa_temp_label.pack()
+
+        info_f = tk.LabelFrame(mid, text="Decision", font=("Arial", 10, "bold"), bg="white")
+        info_f.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10, 0))
+
+        self.sa_delta_label = tk.Label(info_f, text="ΔE = 0", bg="white", font=("Arial", 10))
+        self.sa_delta_label.pack(anchor="w", padx=10)
+        self.sa_prob_label = tk.Label(info_f, text="Accept P = 0.00", bg="white", font=("Arial", 10))
+        self.sa_prob_label.pack(anchor="w", padx=10)
+        self.sa_accepted_label = tk.Label(info_f, text="Accepted: -", bg="white", font=("Arial", 10, "bold"))
+        self.sa_accepted_label.pack(anchor="w", padx=10)
+
+        # Chart area
+        chart_f = tk.LabelFrame(self.sa_frame, text="Cost over Iterations", font=("Arial", 10, "bold"), bg="white")
+        chart_f.pack(fill=tk.BOTH, expand=True, pady=10, padx=20)
+
+        self.sa_chart_canvas = tk.Canvas(chart_f, width=700, height=200, bg="white", highlightthickness=1, highlightbackground="#bdc3c7")
+        self.sa_chart_canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Stats
+        stats_f = tk.Frame(self.sa_frame, bg="white")
+        stats_f.pack(fill=tk.X, pady=5, padx=20)
+
+        self.sa_iter_label = tk.Label(stats_f, text="Iter: 0", bg="white", font=("Arial", 10), fg="#2980b9")
+        self.sa_iter_label.pack(side=tk.LEFT, padx=15)
+        self.sa_best_cost_stat = tk.Label(stats_f, text="Best: -", bg="white", font=("Arial", 10), fg="#27ae60")
+        self.sa_best_cost_stat.pack(side=tk.LEFT, padx=15)
+        self.sa_temp_stat = tk.Label(stats_f, text="Temp: 100.0°C", bg="white", font=("Arial", 10))
+        self.sa_temp_stat.pack(side=tk.LEFT, padx=15)
+        self.sa_restart_stat = tk.Label(stats_f, text="Restart: 0/3", bg="white", font=("Arial", 10))
+        self.sa_restart_stat.pack(side=tk.LEFT, padx=15)
+
+    def update_sa_display(self, data):
+        if not self.is_sa_mode:
+            return
+
+        curr = data.get("current")
+        candidate = data.get("candidate")
+        next_node = data.get("next")
+        best = data.get("best")
+        accepted = data.get("accepted", False)
+
+        if curr:
+            self.draw_state_to_canvas(self.sa_curr_canvas, curr.state)
+            self.sa_curr_cost_label.config(text=f"Cost: {curr.cost}")
+
+        if candidate:
+            self.draw_state_to_canvas(self.sa_cand_canvas, candidate.state)
+            self.sa_cand_cost_label.config(text=f"Cost: {candidate.cost}")
+            act = data.get("action", "")
+            self.sa_cand_action_label.config(text=f"Move: {act}")
+
+        if best:
+            self.draw_state_to_canvas(self.sa_best_canvas, best.state)
+            self.sa_best_cost_label.config(text=f"Cost: {best.cost}")
+            self.sa_best_cost_stat.config(text=f"Best: {best.cost}")
+
+        # Update gauge
+        T = data.get("temperature", 0)
+        initial_temp = data.get("initial_temp", 100)
+        self.sa_temp_label.config(text=f"T = {T:.1f}°C")
+        self.sa_temp_stat.config(text=f"Temp: {T:.1f}°C")
+
+        gauge_w = 380
+        fraction = min(1.0, T / max(initial_temp, 0.01))
+        self.sa_gauge_canvas.delete("all")
+        self.sa_gauge_canvas.create_rectangle(10, 10, 10 + gauge_w, 30, fill="#ecf0f1", outline="#bdc3c7", width=2)
+        if T > 0:
+            color = "#e74c3c" if fraction > 0.5 else ("#f39c12" if fraction > 0.2 else "#2ecc71")
+            self.sa_gauge_canvas.create_rectangle(10, 10, 10 + int(gauge_w * fraction), 30, fill=color, outline="")
+        self.sa_gauge_canvas.create_text(10 + gauge_w // 2, 20, text=f"{T:.1f}°C / {initial_temp:.0f}°C", font=("Arial", 9, "bold"), fill="white")
+
+        # Update info
+        delta = data.get("delta", 0)
+        accept_prob = data.get("accept_prob", 0)
+
+        self.sa_delta_label.config(text=f"ΔE = {delta:+d}")
+        self.sa_prob_label.config(text=f"Accept P = {accept_prob:.4f}")
+
+        if accepted:
+            self.sa_accepted_label.config(text="Decision: ✅ Accepted", fg="#27ae60")
+        else:
+            self.sa_accepted_label.config(text="Decision: ❌ Rejected", fg="#e74c3c")
+
+        # Draw chart
+        cost_history = data.get("cost_history", [])
+        self.draw_sa_chart(cost_history)
+
+        # Update stats
+        self.sa_iter_label.config(text=f"Iter: {data.get('iteration', 0)}")
+        self.sa_restart_stat.config(text=f"Restart: {data.get('restart_count', 0)}/{data.get('max_restart', 3)}")
+
+    def draw_sa_chart(self, cost_history):
+        c = self.sa_chart_canvas
+        c.delete("all")
+        if len(cost_history) < 2:
+            c.create_text(350, 100, text="Waiting for data...", font=("Arial", 12), fill="gray")
+            return
+
+        cw = max(c.winfo_width() - 40, 600)
+        ch = max(c.winfo_height() - 40, 160)
+        margin = 30
+
+        max_cost = max(cost_history)
+        min_cost = min(cost_history)
+        cost_range = max_cost - min_cost if max_cost != min_cost else 1
+        n = len(cost_history)
+
+        # Grid lines
+        for i in range(5):
+            y = margin + (ch - margin) * i // 4
+            c.create_line(margin, y, margin + cw - margin, y, fill="#ecf0f1", width=1)
+            val = max_cost - (cost_range * i // 4)
+            c.create_text(margin - 5, y, text=str(val), anchor="e", font=("Arial", 8), fill="#7f8c8d")
+
+        # Draw line
+        points = []
+        for i, cost in enumerate(cost_history):
+            x = margin + (cw - margin) * i // max(n - 1, 1)
+            y = margin + (ch - margin) - int((cost - min_cost) / cost_range * (ch - margin - 10))
+            points.extend([x, y])
+
+        if len(points) >= 4:
+            c.create_line(points, fill="#e74c3c", width=2, smooth=True)
+
+            # End point dot
+            c.create_oval(points[-2] - 4, points[-1] - 4, points[-2] + 4, points[-1] + 4, fill="#c0392b", outline="")
+
+        # Labels
+        c.create_text(margin + (cw - margin) // 2, ch + 5, text="Iteration", font=("Arial", 9), fill="#7f8c8d")
+        c.create_text(10, margin + (ch - margin) // 2, text="Cost", font=("Arial", 9), fill="#7f8c8d", angle=90)
+
+    def destroy_sa_ui(self):
+        self.sa_frame.pack_forget()
+        self.right_title.config(text="MÔ PHỎNG")
+        self.right_header.pack(fill=tk.X)
+        self.log_scroll.pack(fill=tk.BOTH, expand=True)
+
+    def generate_belief_states(self):
+        try:
+            n_states = int(self.belief_count_var.get())
+            n_goals = int(self.belief_goal_count_var.get())
+        except ValueError:
+            return
+        self.belief_generated_states = generate_random_states(n_states, mode="belief")
+        self.belief_generated_goals = generate_random_states(n_goals, mode="goal")
+
+        # Display generated states in the left panel
+        for w in self.belief_state_frame.winfo_children():
+            if w != self.belief_state_label:
+                w.destroy()
+        for w in self.belief_goal_frame.winfo_children():
+            if w != self.belief_goal_label:
+                w.destroy()
+
+        states_row = tk.Frame(self.belief_state_frame, bg="white")
+        states_row.pack()
+        tk.Label(states_row, text="Belief: ", bg="white", font=("Arial", 8, "bold")).pack(side=tk.LEFT)
+        for s in self.belief_generated_states:
+            mb = self.create_mini_board_canvas(states_row, s)
+            mb.pack(side=tk.LEFT, padx=2)
+
+        goals_row = tk.Frame(self.belief_goal_frame, bg="white")
+        goals_row.pack()
+        tk.Label(goals_row, text="Goals:  ", bg="white", font=("Arial", 8, "bold")).pack(side=tk.LEFT)
+        for g in self.belief_generated_goals:
+            mb = self.create_mini_board_canvas(goals_row, g)
+            mb.pack(side=tk.LEFT, padx=2)
+
+        self.reset_search()
+
+    def build_belief_ui(self):
+        for w in self.sa_frame.winfo_children():
+            w.destroy()
+
+        # Status panel: show all start states' current boards
+        status_f = tk.LabelFrame(self.sa_frame, text="Belief State Status", font=("Arial", 12, "bold"), bg="white")
+        status_f.pack(fill=tk.X, pady=5, padx=10)
+        self.belief_curr_frame = tk.Frame(status_f, bg="white")
+        self.belief_curr_frame.pack(pady=8)
+        self.belief_canvases = []
+        self.belief_status_label = tk.Label(status_f, text="Solved: 0/0  |  Goals: 0", bg="white", font=("Arial", 10, "bold"))
+        self.belief_status_label.pack(pady=2)
+
+        info_f = tk.Frame(self.sa_frame, bg="white")
+        info_f.pack(fill=tk.X, pady=2, padx=10)
+        self.belief_depth_label = tk.Label(info_f, text="Depth: 0", bg="white", font=("Arial", 10), fg="#2980b9")
+        self.belief_depth_label.pack(side=tk.LEFT, padx=15)
+        self.belief_front_count = tk.Label(info_f, text="Frontier: 0", bg="white", font=("Arial", 10))
+        self.belief_front_count.pack(side=tk.LEFT, padx=15)
+        self.belief_explored_count = tk.Label(info_f, text="Explored: 0", bg="white", font=("Arial", 10))
+        self.belief_explored_count.pack(side=tk.LEFT, padx=15)
+
+        # BFS Queue view: show what's in each frontier
+        queue_f = tk.LabelFrame(self.sa_frame, text="BFS Queue (Frontier)", font=("Arial", 12, "bold"), bg="white")
+        queue_f.pack(fill=tk.X, pady=5, padx=10)
+        self.belief_queue_canvas = tk.Canvas(queue_f, bg="white", highlightthickness=0, height=100)
+        self.belief_queue_scroll = ttk.Scrollbar(queue_f, orient="horizontal", command=self.belief_queue_canvas.xview)
+        self.belief_queue_inner = tk.Frame(self.belief_queue_canvas, bg="white")
+        self.belief_queue_inner.bind("<Configure>",
+            lambda e: self.belief_queue_canvas.configure(scrollregion=self.belief_queue_canvas.bbox("all")))
+        self.belief_queue_canvas.create_window((0, 0), window=self.belief_queue_inner, anchor="nw")
+        self.belief_queue_canvas.pack(fill=tk.X, expand=True)
+        self.belief_queue_scroll.pack(fill=tk.X)
+
+    def update_belief_display(self, data):
+        if not self.is_belief_mode:
+            return
+
+        states = data.get("belief", ())
+        solved_list = data.get("solved", [])
+        expanding_idx = data.get("expanding", -1)
+        curr_state = data.get("expanding_state", "")
+        frontier_list = data.get("frontier_logs", [])
+        explored_sets = data.get("explored_sets", [])
+        all_reached = data.get("all_reached", set())
+        queues = data.get("queues", [])
+
+        # Update status boards
+        for c in self.belief_canvases:
+            c.destroy()
+        self.belief_canvases = []
+
+        for i, s in enumerate(states):
+            solved = i < len(solved_list) and solved_list[i]
+            title = f"#{i+1} {'✓' if solved else '○'}"
+            mb = self.create_mini_board_canvas(self.belief_curr_frame, s, title=title)
+            mb.pack(side=tk.LEFT, padx=3)
+            self.belief_canvases.append(mb)
+
+        solved_count = sum(solved_list) if solved_list else 0
+        total = len(states)
+        goal_count = len(self.belief_generated_goals or [])
+        self.belief_depth_label.config(text=f"Depth: {data.get('depth', 0)}")
+
+        total_explored = sum(len(es) for es in explored_sets) if explored_sets else len(all_reached or set())
+        self.belief_explored_count.config(text=f"Explored: {total_explored}")
+        self.belief_front_count.config(text=f"Frontier: {sum(len(q) for q in queues)}")
+
+        restart_reason = data.get("restart_reason", "")
+        restart_flag = data.get("restart_flag", False)
+        target_goal = data.get("target_goal", None)
+
+        # Add step separator + log entry
+        if frontier_list:
+            # Separator between steps
+            sep_f = tk.Frame(self.log_scroll.scrollable_inner_frame, bg="#bdc3c7", height=2)
+            sep_f.pack(fill=tk.X, pady=4, padx=5)
+            step_lbl = tk.Frame(self.log_scroll.scrollable_inner_frame, bg="#f8f9fa")
+            step_lbl.pack(fill=tk.X, pady=0, padx=5)
+            tk.Label(step_lbl,
+                text=f"───── Bước {self.belief_step_count+1} | S{expanding_idx+1} ─────",
+                bg="#f8f9fa", fg="#7f8c8d", font=("Arial", 8, "bold")).pack()
+
+            # Show restart notification
+            if restart_flag and restart_reason:
+                restart_f = tk.Frame(self.log_scroll.scrollable_inner_frame, bg="#fff3cd", highlightbackground="#ffc107", highlightthickness=1)
+                restart_f.pack(fill=tk.X, pady=2, padx=5)
+                tk.Label(restart_f, text=f"🔄 {restart_reason}", bg="#fff3cd", fg="#856404",
+                    font=("Arial", 9, "bold"), wraplength=400).pack(padx=10, pady=4)
+
+            for item in frontier_list:
+                self.add_belief_log_row(
+                    item.get("belief_idx", 0),
+                    item.get("from_state", curr_state),
+                    item.get("action", ""),
+                    item.get("state", ""),
+                    item.get("is_goal", False),
+                    solved_count, total
+                )
+            self.belief_step_count += 1
+
+        # Update status label
+        target_text = f"  |  Target: {target_goal}" if target_goal else f"  |  Goals: {goal_count}"
+        self.belief_status_label.config(
+            text=f"Solved: {solved_count}/{total}{target_text}",
+            fg="#27ae60" if solved_count == total else "#2980b9")
+
+        # Update queue view
+        for w in self.belief_queue_inner.winfo_children():
+            w.destroy()
+        if queues:
+            for qi, q in enumerate(queues):
+                q_row = tk.Frame(self.belief_queue_inner, bg="white")
+                q_row.pack(side=tk.LEFT, padx=10, pady=5)
+                status = "✓" if (qi < len(solved_list) and solved_list[qi]) else ""
+                tk.Label(q_row, text=f"S{qi+1}{status}:", bg="white",
+                    font=("Arial", 9, "bold"), fg="#27ae60" if status else "#2980b9").pack(anchor="w")
+
+                items_f = tk.Frame(q_row, bg="white")
+                items_f.pack(fill=tk.X)
+
+                # Show popped state with red border if this is the expanding state
+                if qi == expanding_idx and curr_state:
+                    pop_f = tk.Frame(items_f, bg="white", highlightbackground="#e74c3c", highlightthickness=2)
+                    pop_f.pack(side=tk.LEFT, padx=2)
+                    mb = self.create_mini_board_canvas(pop_f, curr_state, title="POP")
+                    mb.pack(padx=2, pady=2)
+                    if items_f.winfo_children():
+                        tk.Label(items_f, text="↓", bg="white", fg="#7f8c8d",
+                            font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=2)
+
+                # Show remaining queue items
+                if q:
+                    for qs, qd, _ in q:
+                        mb = self.create_mini_board_canvas(items_f, qs, title=f"d={qd}")
+                        mb.pack(side=tk.LEFT, padx=1)
+                else:
+                    tk.Label(items_f, text="(trống)", bg="white",
+                        font=("Arial", 8), fg="#95a5a6").pack(side=tk.LEFT, padx=3)
+            self.belief_queue_canvas.xview_moveto(0)
+
     def add_log_row(self, curr_node_data, frontier_list, reached_set):
         row_frame = tk.Frame(self.log_scroll.scrollable_inner_frame, bg="white", highlightbackground="#ecf0f1", highlightthickness=1)
         row_frame.pack(fill=tk.X, pady=3, padx=5)
-        
         row_frame.columnconfigure(0, weight=1, minsize=100)
         row_frame.columnconfigure(1, weight=5, minsize=450)
         row_frame.columnconfigure(2, weight=3, minsize=300)
-        
+
         f_node = tk.Frame(row_frame, bg="white")
         f_node.grid(row=0, column=0, sticky="nw", padx=10, pady=5)
-        
         if isinstance(curr_node_data, list):
             for node in curr_node_data:
                 mb = self.create_mini_board_canvas(f_node, node.state, title=f"Node {node.name}\ncost: {node.h}")
@@ -851,10 +1543,9 @@ class PuzzleApp:
         elif curr_node_data:
             mb = self.create_mini_board_canvas(f_node, curr_node_data.state, title=f"Node {curr_node_data.name}")
             mb.pack(pady=4)
-            
+
         f_front = tk.Frame(row_frame, bg="white")
         f_front.grid(row=0, column=1, sticky="nw", padx=10, pady=5)
-        
         if frontier_list == "Cutoff":
             tk.Label(f_front, text="CUTOFF (Sinh ra nhưng vượt mốc)", bg="white", fg="#e74c3c", font=("Arial", 11, "bold")).pack(anchor="w")
         elif frontier_list == "Stuck":
@@ -865,14 +1556,11 @@ class PuzzleApp:
             for item in frontier_list:
                 item_frame = tk.Frame(f_front, bg="white")
                 item_frame.pack(anchor="w", pady=4)
-                
                 tk.Label(item_frame, text="{ ", bg="white", font=("Courier New", 14, "bold"), fg="#34495e").pack(side="left")
                 mb = self.create_mini_board_canvas(item_frame, item['state'])
                 mb.pack(side="left", padx=2)
-                
                 act_char = item['action'][0] if item['action'] else ""
                 info_text = f" , {item['parent_name']} , {act_char} , {item['cost']} }} ➔ Node {item['name']}"
-                
                 is_loai = "Loại" in str(item['cost'])
                 if is_loai:
                     color = "#e74c3c"
@@ -880,21 +1568,51 @@ class PuzzleApp:
                     color = "#27ae60"
                 else:
                     color = "#2c3e50"
-                    
                 if item['is_goal']:
                     info_text += " ★"
-                    
                 tk.Label(item_frame, text=info_text, bg="white", font=("Courier New", 12, "bold"), fg=color).pack(side="left")
-                
+
         f_set = tk.Frame(row_frame, bg="white")
         f_set.grid(row=0, column=2, sticky="nw", padx=10, pady=5)
-        
         set_wrap = tk.Frame(f_set, bg="white")
         set_wrap.pack(fill=tk.X)
         for i, state in enumerate(sorted(list(reached_set))):
             mb = self.create_mini_board_canvas(set_wrap, state)
             mb.grid(row=i//5, column=i%5, padx=3, pady=3)
-            
+
+        self.root.update_idletasks()
+        self.log_scroll.canvas.yview_moveto(1)
+
+    def add_belief_log_row(self, belief_idx, curr_state, action, new_state, is_goal, solved, total):
+        row_frame = tk.Frame(self.log_scroll.scrollable_inner_frame, bg="white", highlightbackground="#ecf0f1", highlightthickness=1)
+        row_frame.pack(fill=tk.X, pady=3, padx=5)
+        row_frame.columnconfigure(0, weight=1, minsize=80)
+        row_frame.columnconfigure(1, weight=4, minsize=350)
+        row_frame.columnconfigure(2, weight=2, minsize=200)
+
+        f_idx = tk.Frame(row_frame, bg="white")
+        f_idx.grid(row=0, column=0, sticky="nw", padx=5, pady=5)
+        tk.Label(f_idx, text=f"S{belief_idx+1}", font=("Arial", 10, "bold"), fg="#2980b9", bg="white").pack(anchor="w")
+        mb = self.create_mini_board_canvas(f_idx, curr_state)
+        mb.pack(pady=2)
+
+        f_front = tk.Frame(row_frame, bg="white")
+        f_front.grid(row=0, column=1, sticky="nw", padx=5, pady=5)
+        item_frame = tk.Frame(f_front, bg="white")
+        item_frame.pack(anchor="w", pady=4)
+        tk.Label(item_frame, text=f"{action}  →  ", bg="white", font=("Arial", 10, "bold"), fg="#34495e").pack(side=tk.LEFT)
+        mb2 = self.create_mini_board_canvas(item_frame, new_state)
+        mb2.pack(side=tk.LEFT, padx=2)
+        if is_goal:
+            tk.Label(item_frame, text="★ GOAL", bg="white", fg="#27ae60", font=("Arial", 11, "bold")).pack(side=tk.LEFT, padx=5)
+
+        f_status = tk.Frame(row_frame, bg="white")
+        f_status.grid(row=0, column=2, sticky="nw", padx=5, pady=5)
+        color = "#27ae60" if solved >= total else "#e67e22"
+        tk.Label(f_status, text=f"Solved: {solved}/{total}", bg="white", font=("Arial", 10, "bold"), fg=color).pack(anchor="w")
+        if solved >= total:
+            tk.Label(f_status, text="🎉 ALL SOLVED!", bg="white", fg="#27ae60", font=("Arial", 11, "bold")).pack(anchor="w")
+
         self.root.update_idletasks()
         self.log_scroll.canvas.yview_moveto(1)
 
@@ -922,28 +1640,92 @@ class PuzzleApp:
     def reset_search(self):
         self.stop_auto() 
         
+        algo_idx = self.algo_cb.current()
+        algo = self.algo_var.get()
+        eval_type = self.eval_var.get()
+        is_sa = "Simulated Annealing" in algo
+        is_belief = "Belief State BFS" in algo
+
+        # Hide SA UI if switching away
+        if self.is_sa_mode and not is_sa:
+            self.destroy_sa_ui()
+            self.is_sa_mode = False
+
+        # Hide belief UI if switching away
+        if self.is_belief_mode and not is_belief:
+            self.sa_frame.pack_forget()
+            self.right_title.config(text="MÔ PHỔNG")
+            self.right_header.pack(fill=tk.X)
+            self.is_belief_mode = False
+
+        # Switch to SA UI
+        if is_sa and not self.is_sa_mode:
+            if self.is_belief_mode:
+                self.sa_frame.pack_forget()
+                self.is_belief_mode = False
+            self.right_header.pack_forget()
+            self.log_scroll.pack_forget()
+            self.right_title.config(text="MÔ PHỔNG - SIMULATED ANNEALING")
+            self.is_sa_mode = True
+            self.sa_frame.pack(fill=tk.BOTH, expand=True)
+            self.build_sa_ui()
+        elif is_sa and self.is_sa_mode:
+            self.build_sa_ui()
+
+        # Switch to Belief UI
+        if is_belief and not self.is_belief_mode:
+            if self.is_sa_mode:
+                self.sa_frame.pack_forget()
+                self.is_sa_mode = False
+            self.right_header.pack_forget()
+            self.right_title.config(text="MÔ PHỔNG - BELIEF STATE BFS")
+            self.is_belief_mode = True
+            self.belief_step_count = 0
+            self.sa_frame.pack(fill=tk.X)
+            self.log_scroll.pack(fill=tk.BOTH, expand=True)
+            self.log_scroll.clear()
+            self.build_belief_ui()
+        elif is_belief and self.is_belief_mode:
+            self.belief_step_count = 0
+            self.log_scroll.clear()
+            self.build_belief_ui()
+
+        # Enable/disable controls for Belief State
+        belief_ctrls = [self.belief_count_sb, self.belief_goal_count_sb, self.belief_gen_btn]
+        if is_belief:
+            for ctrl in belief_ctrls:
+                ctrl.config(state="normal")
+            self.start_entry.config(state="disabled")
+            self.goal_entry.config(state="disabled")
+        else:
+            for ctrl in belief_ctrls:
+                ctrl.config(state="disabled")
+            self.start_entry.config(state="normal")
+            self.goal_entry.config(state="normal")
+
         start_state = self.start_entry.get().strip()
         goal_state = self.goal_entry.get().strip()
         
-        if len(start_state) != 9 or len(goal_state) != 9:
-            messagebox.showerror("Lỗi", "Trạng thái phải là chuỗi đúng 9 số từ 0-8!")
-            return
+        if not is_belief:
+            if len(start_state) != 9 or len(goal_state) != 9:
+                messagebox.showerror("Lỗi", "Trạng thái phải là chuỗi đúng 9 số từ 0-8!")
+                return
             
         self.node_counter = 0
         self.total_popped = 0
         self.is_solved = False
         
-        self.draw_state_to_canvas(self.curr_board_canvas, start_state)
-        self.draw_state_to_canvas(self.goal_board_canvas, goal_state)
+        if not is_belief:
+            self.draw_state_to_canvas(self.curr_board_canvas, start_state)
+            self.draw_state_to_canvas(self.goal_board_canvas, goal_state)
         
-        self.log_scroll.clear()
+        if not is_sa and not is_belief:
+            self.log_scroll.clear()
         
-        algo_idx = self.algo_cb.current()
-        algo = self.algo_var.get()
-        eval_type = self.eval_var.get()
-        
-        if algo_idx >= 5:
+        if algo_idx >= 5 or is_sa:
             self.eval_cb.config(state="readonly")
+        elif not is_belief:
+            self.eval_cb.config(state="disabled")
         else:
             self.eval_cb.config(state="disabled")
             
@@ -962,6 +1744,24 @@ class PuzzleApp:
         else:
             self.k_sb.config(state="disabled")
             k_val = 1
+
+        # SA controls
+        sa_controls = [self.sa_initial_temp_sb, self.sa_cooling_rate_sb,
+                       self.sa_min_temp_sb, self.sa_max_restart_sb]
+        if is_sa:
+            for ctrl in sa_controls:
+                ctrl.config(state="normal")
+            try:
+                initial_temp = float(self.sa_initial_temp_var.get())
+                cooling_rate = float(self.sa_cooling_rate_var.get())
+                min_temp = float(self.sa_min_temp_var.get())
+                max_restart_sa = int(self.sa_max_restart_var.get())
+            except ValueError:
+                initial_temp, cooling_rate, min_temp, max_restart_sa = 100, 0.95, 0.1, 3
+        else:
+            for ctrl in sa_controls:
+                ctrl.config(state="disabled")
+            initial_temp = cooling_rate = min_temp = max_restart_sa = None
             
         if "Tối ưu" in algo:
             self.generator = bfs_optimized(start_state, goal_state, self.get_next_name)
@@ -989,14 +1789,23 @@ class PuzzleApp:
             self.generator = random_restart_hill_climbing(start_state, goal_state, self.get_next_name, eval_type, max_res)
         elif "Local Beam Search" in algo:
             self.generator = local_beam_search(start_state, goal_state, self.get_next_name, eval_type, k_val)
+        elif is_sa:
+            self.generator = simulated_annealing(start_state, goal_state, self.get_next_name, eval_type,
+                                                  initial_temp, cooling_rate, min_temp, max_restart_sa)
+        elif is_belief:
+            if self.belief_generated_states and self.belief_generated_goals:
+                self.generator = belief_state_bfs(self.belief_generated_states, self.belief_generated_goals, self.get_next_name)
+            else:
+                self.generator = None
+                messagebox.showinfo("Belief State", "Hãy nhấn 'Sinh ngẫu nhiên' trước!")
         else:
             self.generator = dfs_algorithm(start_state, goal_state, self.get_next_name)
 
-        self.btn_step.config(state="normal")
-        self.btn_auto.config(state="normal")
+        self.btn_step.config(state="normal" if self.generator else "disabled")
+        self.btn_auto.config(state="normal" if self.generator else "disabled")
         self.lbl_status.config(text="Trạng thái: Đã khởi tạo.", fg="#2980b9")
         
-        md = get_eval_value(None, start_state, goal_state, eval_type) if algo_idx >= 5 else get_manhattan_distance(start_state, goal_state)
+        md = get_eval_value(None, start_state, goal_state, eval_type) if (algo_idx >= 5 or is_sa) else get_manhattan_distance(start_state, goal_state)
         self.lbl_manhattan.config(text=f"Chi phí / Heuristic ban đầu: {md}")
         self.lbl_depth.config(text="Độ sâu hiện tại (Depth): 0")
         self.lbl_popped.config(text="Số Node đã duyệt (Pop): 0")
@@ -1010,6 +1819,59 @@ class PuzzleApp:
             curr_data, frontier_logs, reached_set, goal_node = yielded_data
             
             self.total_popped += 1
+
+            if self.is_sa_mode:
+                self.update_sa_display(curr_data)
+                if frontier_logs == "SA_stuck":
+                    self.lbl_status.config(text="❌ SA kết thúc: Đạt T_min hoặc không tìm thấy lời giải!", fg="#c0392b")
+                    self.is_solved = True
+                    self.btn_step.config(state="disabled")
+                    self.stop_auto()
+                    self.btn_auto.config(state="disabled")
+                elif goal_node:
+                    self.is_solved = True
+                    self.lbl_status.config(text=f"🎉 SA tìm thấy Đích! Best cost: {goal_node.cost}", fg="#27ae60")
+                    self.btn_step.config(state="disabled")
+                    self.stop_auto()
+                    self.btn_auto.config(state="disabled")
+                else:
+                    self.lbl_status.config(text=f"Trạng thái: SA đang chạy (Iter {curr_data.get('iteration', 0)})", fg="#2980b9")
+                return
+
+            if self.is_belief_mode:
+                if isinstance(frontier_logs, str) and frontier_logs == "Belief_limit":
+                    self.is_solved = True
+                    self.lbl_status.config(text="❌ Belief BFS: Đạt giới hạn độ sâu!", fg="#c0392b")
+                    self.btn_step.config(state="disabled")
+                    self.stop_auto()
+                    self.btn_auto.config(state="disabled")
+                    return
+                belief_data = {"belief": curr_data.get("belief", ()),
+                               "depth": curr_data.get("depth", 0),
+                               "solved": curr_data.get("solved", []),
+                               "expanding": curr_data.get("expanding", -1),
+                               "expanding_state": curr_data.get("expanding_state", ""),
+                               "frontier_logs": frontier_logs if isinstance(frontier_logs, list) else [],
+                               "explored_sets": curr_data.get("explored_sets", []),
+                               "all_reached": reached_set,
+                               "queues": curr_data.get("queues", []),
+                               "target_goal": curr_data.get("target_goal", None),
+                               "restart_reason": curr_data.get("restart_reason", ""),
+                               "restart_flag": curr_data.get("restart_flag", False)}
+                self.update_belief_display(belief_data)
+                if goal_node:
+                    self.is_solved = True
+                    solved_count = sum(curr_data.get('solved', []))
+                    total = len(curr_data.get('solved', []))
+                    self.lbl_status.config(text=f"🎉 Belief BFS: {solved_count}/{total} states đã tìm thấy goal!", fg="#27ae60")
+                    self.btn_step.config(state="disabled")
+                    self.stop_auto()
+                    self.btn_auto.config(state="disabled")
+                else:
+                    solved_count = sum(curr_data.get('solved', []))
+                    total = len(curr_data.get('solved', []))
+                    self.lbl_status.config(text=f"Trạng thái: Belief BFS ({solved_count}/{total} solved, Depth {curr_data.get('depth', 0)})", fg="#2980b9")
+                return
             
             if isinstance(curr_data, list):
                 best_node = curr_data[0] if curr_data else None
@@ -1040,7 +1902,12 @@ class PuzzleApp:
                 self.btn_auto.config(state="disabled")
                 
         except StopIteration:
-            self.lbl_status.config(text="❌ Thất bại: Đạt cực đại cục bộ / Đã duyệt hết!", fg="#c0392b")
+            if self.is_sa_mode:
+                self.lbl_status.config(text="❌ SA kết thúc: Không thể tiếp tục!", fg="#c0392b")
+            elif self.is_belief_mode:
+                self.lbl_status.config(text="❌ Belief BFS: Không tìm thấy lời giải!", fg="#c0392b")
+            else:
+                self.lbl_status.config(text="❌ Thất bại: Đạt cực đại cục bộ / Đã duyệt hết!", fg="#c0392b")
             self.is_solved = True
             
             self.btn_step.config(state="disabled")
