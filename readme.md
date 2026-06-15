@@ -25,6 +25,8 @@
   - `Local Beam Search (Tìm kiếm chùm cục bộ)`
   - `Simulated Annealing (SA - Ủ mô phỏng)`
   - `Belief State BFS (Đa trạng thái)`
+  - `AND-OR Graph Search (Không xác định)`
+  - `CSP Backtracking (Sinh trạng thái hợp lệ)`
 - Có thể chọn loại heuristic / cost (dùng cho các thuật toán dựa trên chi phí):
   - `Khoảng cách Manhattan`
   - `Số ô sai vị trí`
@@ -53,6 +55,8 @@
 - `Local Beam Search` giữ `K` node tốt nhất hiện tại và mở rộng các lân cận của chúng.
 - `Simulated Annealing` dùng nhiệt độ giảm dần để chấp nhận những bước xấu tạm thời giúp thoát khỏi cực đại cục bộ.
 - `Belief State BFS` quản lý nhiều trạng thái bắt đầu và nhiều trạng thái đích cùng lúc.
+- `AND-OR Graph Search` xây dựng kế hoạch dự phòng bằng cách ghép các bước OR và AND cho những hành động không xác định.
+- `CSP Backtracking` sinh và kiểm tra trạng thái bàn cờ hợp lệ theo quy tắc CSP.
 - Thứ tự sinh nước đi trong mô phỏng là: `Left`, `Right`, `Up`, `Down`.
 
 ---
