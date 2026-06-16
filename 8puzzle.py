@@ -1254,6 +1254,7 @@ class PuzzleApp:
         self.node_counter = 0; self.total_popped = 0; self.is_solved = False
         if not is_belief:
             start_to_draw = "---------" if "CSP" in algo else start_state
+            self.restore_board_canvas()
             self.draw_state_to_canvas(self.curr_board_canvas, start_to_draw)
             self.draw_state_to_canvas(self.goal_board_canvas, goal_state)
         if not is_sa and not is_belief: self.log_scroll.clear()
@@ -1305,6 +1306,21 @@ class PuzzleApp:
         md = get_eval_value(None, start_state, goal_state, eval_type) if (algo_idx >= 5 or is_sa) else get_manhattan_distance(start_state, goal_state)
         self.lbl_manhattan.config(text=f"Chi phí / Heuristic ban đầu: {md}"); self.lbl_depth.config(text="Độ sâu hiện tại (Depth): 0"); self.lbl_popped.config(text="Số Node đã duyệt (Pop): 0")
 
+    def draw_beam_states(self, nodes_list):
+        self.curr_board_canvas.delete("all")
+        if not nodes_list:
+            return
+        frame = tk.Frame(self.curr_board_canvas, bg="#34495e")
+        for i, node in enumerate(nodes_list):
+            mb = self.create_mini_board_canvas(frame, node.state, title=f"B{i+1} h={node.h}")
+            mb.pack(side=tk.LEFT, padx=2)
+        width = min(len(nodes_list) * 60 + 5, 400)
+        self.curr_board_canvas.config(width=width)
+        self.curr_board_canvas.create_window(0, 0, window=frame, anchor="nw", width=width)
+
+    def restore_board_canvas(self):
+        self.curr_board_canvas.config(width=160, height=160)
+
     def step_search(self):
         if self.is_solved or not self.generator: return
         try:
@@ -1347,10 +1363,20 @@ class PuzzleApp:
             domains = None
             if isinstance(curr_data, dict) and "domains" in curr_data:
                 domains = curr_data["domains"]; best_node = curr_data["node"]
-            elif isinstance(curr_data, list): best_node = curr_data[0] if curr_data else None
-            else: best_node = curr_data
-            if best_node: self.draw_state_to_canvas(self.curr_board_canvas, best_node.state, domains)
-            self.add_log_row(best_node, frontier_logs, reached_set, domains)
+                if best_node: self.draw_state_to_canvas(self.curr_board_canvas, best_node.state, domains)
+                self.add_log_row(best_node, frontier_logs, reached_set, domains)
+            elif isinstance(curr_data, list) and "Local Beam" in self.algo_var.get():
+                self.draw_beam_states(curr_data)
+                self.add_log_row(curr_data, frontier_logs, reached_set, None)
+                best_node = curr_data[0] if curr_data else None
+            elif isinstance(curr_data, list):
+                best_node = curr_data[0] if curr_data else None
+                if best_node: self.draw_state_to_canvas(self.curr_board_canvas, best_node.state, None)
+                self.add_log_row(best_node, frontier_logs, reached_set, None)
+            else:
+                best_node = curr_data
+                if best_node: self.draw_state_to_canvas(self.curr_board_canvas, best_node.state, None)
+                self.add_log_row(best_node, frontier_logs, reached_set, None)
             if best_node:
                 algo_idx = self.algo_cb.current(); eval_type = self.eval_var.get()
                 md = get_eval_value(best_node.state, best_node.state, self.goal_entry.get().strip(), eval_type) if algo_idx >= 5 else get_manhattan_distance(best_node.state, self.goal_entry.get().strip())
